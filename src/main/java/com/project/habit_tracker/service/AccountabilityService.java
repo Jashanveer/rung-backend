@@ -8,6 +8,7 @@ import com.project.habit_tracker.entity.*;
 import com.project.habit_tracker.repository.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -32,6 +33,7 @@ public class AccountabilityService {
     private final MentorshipMessageRepository messageRepo;
     private final SocialPostRepository postRepo;
     private final FriendConnectionRepository friendRepo;
+    private final AccountabilityStreamService streamService;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -41,7 +43,8 @@ public class AccountabilityService {
             MentorMatchRepository matchRepo,
             MentorshipMessageRepository messageRepo,
             SocialPostRepository postRepo,
-            FriendConnectionRepository friendRepo
+            FriendConnectionRepository friendRepo,
+            AccountabilityStreamService streamService
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -51,6 +54,7 @@ public class AccountabilityService {
         this.messageRepo = messageRepo;
         this.postRepo = postRepo;
         this.friendRepo = friendRepo;
+        this.streamService = streamService;
     }
 
     @Transactional
@@ -100,7 +104,10 @@ public class AccountabilityService {
         MentorCandidateScore best = bestMentorFor(mentee, menteeProfile, excludedMentorIds)
                 .orElseThrow(() -> new IllegalStateException("No eligible mentors are available yet"));
 
-        existing.ifPresent(this::endMatch);
+        existing.ifPresent(current -> {
+            endMatch(current);
+            streamService.publishToMatch(current.getId(), "match.updated", toMatch(current));
+        });
 
         MentorMatch match = MentorMatch.builder()
                 .mentor(best.user())
@@ -112,13 +119,15 @@ public class AccountabilityService {
                 .build();
         matchRepo.save(match);
 
-        messageRepo.save(MentorshipMessage.builder()
+        MentorshipMessage welcomeMessage = messageRepo.save(MentorshipMessage.builder()
                 .match(match)
                 .sender(best.user())
                 .message("I am here with you. What is the smallest habit you can finish today?")
                 .nudge(true)
                 .createdAt(Instant.now())
                 .build());
+        streamService.publishToMatch(match.getId(), "message.created", toMessage(welcomeMessage));
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
 
         return dashboardFor(mentee, menteeProfile, menteeStats, match, matchRepo.findAllByMentorAndStatusIn(mentee, LIVE_MATCH_STATUSES));
     }
@@ -132,6 +141,7 @@ public class AccountabilityService {
         }
 
         endMatch(match);
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
         return dashboard(userId);
     }
 
@@ -139,14 +149,30 @@ public class AccountabilityService {
     public AccountabilityDashboardResponse sendMessage(Long userId, Long matchId, MentorshipMessageRequest req, boolean nudge) {
         User sender = requireUser(userId);
         MentorMatch match = requireMatchParticipant(matchId, sender);
-        messageRepo.save(MentorshipMessage.builder()
+        MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
                 .match(match)
                 .sender(sender)
                 .message(req.message().trim())
                 .nudge(nudge)
                 .createdAt(Instant.now())
                 .build());
+        streamService.publishToMatch(matchId, "message.created", toMessage(saved));
+        streamService.publishToMatch(matchId, "match.updated", toMatch(match));
         return dashboard(userId);
+    }
+
+    @Transactional(readOnly = true)
+    public SseEmitter streamMatch(Long userId, Long matchId, String lastEventId) {
+        User user = requireUser(userId);
+        MentorMatch match = requireMatchParticipant(matchId, user);
+        return streamService.subscribe(match.getId(), userId, lastEventId);
+    }
+
+    @Transactional
+    public void markMatchRead(Long userId, Long matchId) {
+        User user = requireUser(userId);
+        MentorMatch match = requireMatchParticipant(matchId, user);
+        streamService.publishToMatch(match.getId(), "message.read", new MessageReadEvent(match.getId(), user.getId(), Instant.now()));
     }
 
     @Transactional
@@ -841,6 +867,13 @@ public class AccountabilityService {
     private record FriendCandidate(
             User user,
             int score
+    ) {
+    }
+
+    private record MessageReadEvent(
+            Long matchId,
+            Long userId,
+            Instant at
     ) {
     }
 }

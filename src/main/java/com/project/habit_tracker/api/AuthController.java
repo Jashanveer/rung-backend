@@ -1,6 +1,7 @@
 package com.project.habit_tracker.api;
 
 import com.project.habit_tracker.api.dto.AuthLoginRequest;
+import com.project.habit_tracker.api.dto.AuthRefreshRequest;
 import com.project.habit_tracker.api.dto.AuthRegisterRequest;
 import com.project.habit_tracker.api.dto.AuthResponse;
 import com.project.habit_tracker.service.AuthService;
@@ -28,5 +29,10 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody AuthLoginRequest req) {
         return ResponseEntity.ok(authService.login(req));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<AuthResponse> refresh(@Valid @RequestBody AuthRefreshRequest req) {
+        return ResponseEntity.ok(authService.refresh(req));
     }
 }

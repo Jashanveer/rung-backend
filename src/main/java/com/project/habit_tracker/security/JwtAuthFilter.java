@@ -39,6 +39,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         String token = auth.substring("Bearer ".length()).trim();
         try {
             Claims claims = jwtService.parse(token).getBody();
+            String type = claims.get("type", String.class);
+            if (!"access".equals(type)) {
+                chain.doFilter(request, response);
+                return;
+            }
             Long userId = Long.valueOf(claims.getSubject());
 
             User user = userRepo.findById(userId).orElse(null);

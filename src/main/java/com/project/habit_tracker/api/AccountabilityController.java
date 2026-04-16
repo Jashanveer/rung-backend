@@ -7,9 +7,11 @@ import com.project.habit_tracker.api.dto.SocialPostRequest;
 import com.project.habit_tracker.security.JwtAuthFilter;
 import com.project.habit_tracker.service.AccountabilityService;
 import jakarta.validation.Valid;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -55,6 +57,24 @@ public class AccountabilityController {
             @PathVariable Long matchId
     ) {
         return ResponseEntity.ok(accountabilityService.sendNudge(userId(auth), matchId));
+    }
+
+    @GetMapping(value = "/matches/{matchId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamMatch(
+            Authentication auth,
+            @PathVariable Long matchId,
+            @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId
+    ) {
+        return accountabilityService.streamMatch(userId(auth), matchId, lastEventId);
+    }
+
+    @PostMapping("/matches/{matchId}/read")
+    public ResponseEntity<Void> markMatchRead(
+            Authentication auth,
+            @PathVariable Long matchId
+    ) {
+        accountabilityService.markMatchRead(userId(auth), matchId);
+        return ResponseEntity.ok().build();
     }
 
     @PostMapping("/matches/{matchId}/release")

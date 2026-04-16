@@ -1,6 +1,7 @@
 package com.project.habit_tracker.service;
 
 import com.project.habit_tracker.api.dto.AuthLoginRequest;
+import com.project.habit_tracker.api.dto.AuthRefreshRequest;
 import com.project.habit_tracker.api.dto.AuthRegisterRequest;
 import com.project.habit_tracker.api.dto.AuthResponse;
 import com.project.habit_tracker.entity.User;
@@ -58,8 +59,7 @@ public class AuthService {
                 .goals("Daily consistency")
                 .build());
 
-        String token = jwtService.createToken(user.getId(), user.getEmail());
-        return new AuthResponse(token);
+        return issueTokens(user);
     }
 
     public AuthResponse login(AuthLoginRequest req) {
@@ -72,8 +72,14 @@ public class AuthService {
             throw new IllegalArgumentException("Invalid credentials");
         }
 
-        String token = jwtService.createToken(user.getId(), user.getEmail());
-        return new AuthResponse(token);
+        return issueTokens(user);
+    }
+
+    public AuthResponse refresh(AuthRefreshRequest req) {
+        Long userId = jwtService.parseRefreshToken(req.refreshToken());
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("Invalid refresh token"));
+        return issueTokens(user);
     }
 
     private String normalizeUsername(String username) {
@@ -90,5 +96,12 @@ public class AuthService {
             throw new IllegalArgumentException("Choose one of the predefined avatars");
         }
         return trimmed;
+    }
+
+    private AuthResponse issueTokens(User user) {
+        String accessToken = jwtService.createAccessToken(user.getId(), user.getEmail());
+        String refreshToken = jwtService.createRefreshToken(user.getId(), user.getEmail());
+        long accessExp = jwtService.extractExpirationEpochSeconds(accessToken);
+        return new AuthResponse(accessToken, refreshToken, accessExp);
     }
 }
