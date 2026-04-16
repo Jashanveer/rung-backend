@@ -34,6 +34,8 @@ public class AccountabilityService {
     private final SocialPostRepository postRepo;
     private final FriendConnectionRepository friendRepo;
     private final AccountabilityStreamService streamService;
+    private final DeviceTokenService deviceTokenService;
+    private final ApnsService apnsService;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -44,7 +46,9 @@ public class AccountabilityService {
             MentorshipMessageRepository messageRepo,
             SocialPostRepository postRepo,
             FriendConnectionRepository friendRepo,
-            AccountabilityStreamService streamService
+            AccountabilityStreamService streamService,
+            DeviceTokenService deviceTokenService,
+            ApnsService apnsService
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -55,6 +59,8 @@ public class AccountabilityService {
         this.postRepo = postRepo;
         this.friendRepo = friendRepo;
         this.streamService = streamService;
+        this.deviceTokenService = deviceTokenService;
+        this.apnsService = apnsService;
     }
 
     @Transactional
@@ -158,7 +164,25 @@ public class AccountabilityService {
                 .build());
         streamService.publishToMatch(matchId, "message.created", toMessage(saved));
         streamService.publishToMatch(matchId, "match.updated", toMatch(match));
+
+        if (nudge) {
+            pushNudgeToReceiver(sender, match, req.message().trim());
+        }
+
         return dashboard(userId);
+    }
+
+    /** Fire an APNs push to every registered device of the message recipient. */
+    private void pushNudgeToReceiver(User sender, MentorMatch match, String message) {
+        User receiver = sender.getId().equals(match.getMentor().getId())
+                ? match.getMentee()
+                : match.getMentor();
+        String senderName = profileRepo.findByUser(sender)
+                .map(p -> p.getDisplayName())
+                .orElse("Your mentor");
+        deviceTokenService.tokensForUser(receiver).forEach(dt ->
+                apnsService.sendNudge(dt.getToken(), senderName, message)
+        );
     }
 
     @Transactional(readOnly = true)
