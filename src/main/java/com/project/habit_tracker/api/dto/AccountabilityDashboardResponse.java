@@ -18,8 +18,10 @@ public record AccountabilityDashboardResponse(
 ) {
     public record Profile(
             Long userId,
+            String username,
             String email,
             String displayName,
+            String avatarUrl,
             String timezone,
             String language,
             String goals

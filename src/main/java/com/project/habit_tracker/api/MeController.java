@@ -13,6 +13,6 @@ public class MeController {
     @GetMapping("/me")
     public ResponseEntity<MeResponse> me(Authentication auth) {
         JwtAuthFilter.AuthPrincipal principal = (JwtAuthFilter.AuthPrincipal) auth.getPrincipal();
-        return ResponseEntity.ok(new MeResponse(principal.userId(), principal.email()));
+        return ResponseEntity.ok(new MeResponse(principal.userId(), principal.email(), principal.username()));
     }
 }

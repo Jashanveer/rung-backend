@@ -70,6 +70,7 @@ public class AccountabilityService {
         User user = requireUser(userId);
         UserProfile profile = ensureProfile(user);
         profile.setDisplayName(req.displayName().trim());
+        profile.setAvatarUrl(blankToNull(req.avatarUrl()));
         profile.setTimezone(req.timezone().trim());
         profile.setLanguage(req.language().trim().toUpperCase());
         profile.setGoals(req.goals().trim());
@@ -182,7 +183,7 @@ public class AccountabilityService {
         String trimmed = query == null ? "" : query.trim();
         List<User> candidates = trimmed.isBlank()
                 ? suggestedFriends(user).stream().map(FriendCandidate::user).toList()
-                : userRepo.searchByEmail(userId, trimmed).stream().limit(10).toList();
+                : userRepo.searchByIdentity(userId, trimmed).stream().limit(10).toList();
 
         Set<Long> connectedUserIds = connectedUserIds(user);
         return candidates.stream()
@@ -458,8 +459,10 @@ public class AccountabilityService {
     private AccountabilityDashboardResponse.Profile toProfile(User user, UserProfile profile) {
         return new AccountabilityDashboardResponse.Profile(
                 user.getId(),
+                defaultUsername(user),
                 user.getEmail(),
                 profile.getDisplayName(),
+                profile.getAvatarUrl(),
                 profile.getTimezone(),
                 profile.getLanguage(),
                 profile.getGoals()
@@ -768,6 +771,7 @@ public class AccountabilityService {
         return profileRepo.findByUser(user).orElseGet(() -> profileRepo.save(UserProfile.builder()
                 .user(user)
                 .displayName(defaultDisplayName(user))
+                .avatarUrl(null)
                 .timezone(ZoneId.systemDefault().getId())
                 .language(Locale.getDefault().getLanguage().toUpperCase())
                 .goals("Daily consistency")
@@ -775,9 +779,22 @@ public class AccountabilityService {
     }
 
     private String defaultDisplayName(User user) {
+        if (user.getUsername() != null && !user.getUsername().isBlank()) {
+            return user.getUsername();
+        }
         String email = user.getEmail();
         int at = email.indexOf('@');
         return at > 0 ? email.substring(0, at) : "User " + user.getId();
+    }
+
+    private String defaultUsername(User user) {
+        return user.getUsername() == null || user.getUsername().isBlank()
+                ? defaultDisplayName(user)
+                : user.getUsername();
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private User requireUser(Long userId) {

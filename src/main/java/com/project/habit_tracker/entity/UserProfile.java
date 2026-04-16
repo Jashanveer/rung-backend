@@ -22,6 +22,9 @@ public class UserProfile {
     @Column(nullable = false)
     private String displayName;
 
+    @Column(length = 512)
+    private String avatarUrl;
+
     @Column(nullable = false)
     private String timezone;
 
