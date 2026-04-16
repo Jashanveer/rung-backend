@@ -1,0 +1,42 @@
+package com.project.habit_tracker.repository;
+
+import com.project.habit_tracker.entity.FriendConnection;
+import com.project.habit_tracker.entity.FriendConnectionStatus;
+import com.project.habit_tracker.entity.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+public interface FriendConnectionRepository extends JpaRepository<FriendConnection, Long> {
+    @Query("""
+            select fc from FriendConnection fc
+            where fc.status = :status
+              and (fc.requester = :user or fc.addressee = :user)
+            order by fc.updatedAt desc
+            """)
+    List<FriendConnection> findAllByUserAndStatus(
+            @Param("user") User user,
+            @Param("status") FriendConnectionStatus status
+    );
+
+    @Query("""
+            select fc from FriendConnection fc
+            where (fc.requester = :left and fc.addressee = :right)
+               or (fc.requester = :right and fc.addressee = :left)
+            """)
+    Optional<FriendConnection> findBetween(@Param("left") User left, @Param("right") User right);
+
+    @Query("""
+            select fc from FriendConnection fc
+            where fc.status in :statuses
+              and (fc.requester = :user or fc.addressee = :user)
+            """)
+    List<FriendConnection> findAllByUserAndStatusIn(
+            @Param("user") User user,
+            @Param("statuses") Collection<FriendConnectionStatus> statuses
+    );
+}

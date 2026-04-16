@@ -12,11 +12,13 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 public class AccountabilityService {
+    private static final int MENTOR_LOCK_DAYS = 7;
     private static final List<MentorMatchStatus> LIVE_MATCH_STATUSES = List.of(
             MentorMatchStatus.PENDING,
             MentorMatchStatus.ACTIVE
@@ -29,6 +31,7 @@ public class AccountabilityService {
     private final MentorMatchRepository matchRepo;
     private final MentorshipMessageRepository messageRepo;
     private final SocialPostRepository postRepo;
+    private final FriendConnectionRepository friendRepo;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -37,7 +40,8 @@ public class AccountabilityService {
             HabitCheckRepository checkRepo,
             MentorMatchRepository matchRepo,
             MentorshipMessageRepository messageRepo,
-            SocialPostRepository postRepo
+            SocialPostRepository postRepo,
+            FriendConnectionRepository friendRepo
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -46,6 +50,7 @@ public class AccountabilityService {
         this.matchRepo = matchRepo;
         this.messageRepo = messageRepo;
         this.postRepo = postRepo;
+        this.friendRepo = friendRepo;
     }
 
     @Transactional
@@ -77,14 +82,24 @@ public class AccountabilityService {
         User mentee = requireUser(userId);
         UserProfile menteeProfile = ensureProfile(mentee);
         UserStats menteeStats = statsFor(mentee);
-
-        Optional<MentorMatch> existing = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(mentee, LIVE_MATCH_STATUSES);
-        if (existing.isPresent()) {
-            return dashboard(userId);
+        if (!canFindMentor(menteeStats)) {
+            throw new IllegalStateException("Mentor matching unlocks after 7 days of habit data.");
         }
 
-        MentorCandidateScore best = bestMentorFor(mentee, menteeProfile)
+        Optional<MentorMatch> existing = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(mentee, LIVE_MATCH_STATUSES);
+        Set<Long> excludedMentorIds = new HashSet<>();
+        if (existing.isPresent()) {
+            MentorMatch current = existing.get();
+            if (isMentorLocked(current)) {
+                throw new IllegalStateException("This mentor match is locked until " + mentorLockedUntil(current) + ".");
+            }
+            excludedMentorIds.add(current.getMentor().getId());
+        }
+
+        MentorCandidateScore best = bestMentorFor(mentee, menteeProfile, excludedMentorIds)
                 .orElseThrow(() -> new IllegalStateException("No eligible mentors are available yet"));
+
+        existing.ifPresent(this::endMatch);
 
         MentorMatch match = MentorMatch.builder()
                 .mentor(best.user())
@@ -105,6 +120,18 @@ public class AccountabilityService {
                 .build());
 
         return dashboardFor(mentee, menteeProfile, menteeStats, match, matchRepo.findAllByMentorAndStatusIn(mentee, LIVE_MATCH_STATUSES));
+    }
+
+    @Transactional
+    public AccountabilityDashboardResponse releaseMatch(Long userId, Long matchId) {
+        User user = requireUser(userId);
+        MentorMatch match = requireMatchParticipant(matchId, user);
+        if (isMentorLocked(match)) {
+            throw new IllegalStateException("This mentor match is locked until " + mentorLockedUntil(match) + ".");
+        }
+
+        endMatch(match);
+        return dashboard(userId);
     }
 
     @Transactional
@@ -150,6 +177,66 @@ public class AccountabilityService {
     }
 
     @Transactional
+    public List<AccountabilityDashboardResponse.FriendSummary> searchFriends(Long userId, String query) {
+        User user = requireUser(userId);
+        String trimmed = query == null ? "" : query.trim();
+        List<User> candidates = trimmed.isBlank()
+                ? suggestedFriends(user).stream().map(FriendCandidate::user).toList()
+                : userRepo.searchByEmail(userId, trimmed).stream().limit(10).toList();
+
+        Set<Long> connectedUserIds = connectedUserIds(user);
+        return candidates.stream()
+                .filter(candidate -> !connectedUserIds.contains(candidate.getId()))
+                .map(this::toFriendSummary)
+                .limit(10)
+                .toList();
+    }
+
+    @Transactional
+    public AccountabilityDashboardResponse requestFriend(Long userId, Long friendUserId) {
+        User requester = requireUser(userId);
+        User addressee = requireUser(friendUserId);
+        if (requester.getId().equals(addressee.getId())) {
+            throw new IllegalArgumentException("You cannot add yourself as a friend");
+        }
+
+        Optional<FriendConnection> existing = friendRepo.findBetween(requester, addressee);
+        if (existing.isEmpty()) {
+            Instant now = Instant.now();
+            friendRepo.save(FriendConnection.builder()
+                    .requester(requester)
+                    .addressee(addressee)
+                    .status(FriendConnectionStatus.ACCEPTED)
+                    .createdAt(now)
+                    .updatedAt(now)
+                    .build());
+        } else if (existing.get().getStatus() == FriendConnectionStatus.PENDING) {
+            FriendConnection connection = existing.get();
+            connection.setStatus(FriendConnectionStatus.ACCEPTED);
+            connection.setUpdatedAt(Instant.now());
+            friendRepo.save(connection);
+        }
+
+        return dashboard(userId);
+    }
+
+    @Transactional
+    public AccountabilityDashboardResponse acceptFriend(Long userId, Long connectionId) {
+        User user = requireUser(userId);
+        FriendConnection connection = friendRepo.findById(connectionId)
+                .orElseThrow(() -> new IllegalArgumentException("Friend request not found"));
+        if (!connection.getAddressee().getId().equals(user.getId())) {
+            throw new IllegalArgumentException("Only the addressee can accept this friend request");
+        }
+
+        connection.setStatus(FriendConnectionStatus.ACCEPTED);
+        connection.setUpdatedAt(Instant.now());
+        friendRepo.save(connection);
+
+        return dashboard(userId);
+    }
+
+    @Transactional
     public AccountabilityDashboardResponse.WeeklyChallenge weeklyChallenge(Long userId) {
         User user = requireUser(userId);
         UserStats stats = statsFor(user);
@@ -178,16 +265,19 @@ public class AccountabilityService {
                         mentorMatches.size(),
                         mentorMatches.stream().map(this::toMenteeSummary).toList()
                 ),
+                mentorshipStatusFor(stats, ownMatch),
                 new AccountabilityDashboardResponse.Rewards(stats.xp(), stats.coins(), badgesFor(stats)),
                 weeklyChallengeFor(user, stats),
+                socialDashboardFor(user),
                 feed(),
                 notificationsFor(stats, ownMatch, mentorMatches)
         );
     }
 
-    private Optional<MentorCandidateScore> bestMentorFor(User mentee, UserProfile menteeProfile) {
+    private Optional<MentorCandidateScore> bestMentorFor(User mentee, UserProfile menteeProfile, Set<Long> excludedUserIds) {
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(mentee.getId()))
+                .filter(candidate -> !excludedUserIds.contains(candidate.getId()))
                 .map(candidate -> scoreCandidate(candidate, menteeProfile))
                 .flatMap(Optional::stream)
                 .filter(score -> score.stats().mentorEligible())
@@ -205,11 +295,13 @@ public class AccountabilityService {
         int goalScore = (int) Math.round(goalOverlap(menteeProfile.getGoals(), candidateProfile.getGoals()) * 25);
         int timezoneScore = timezoneScore(menteeProfile.getTimezone(), candidateProfile.getTimezone());
         int languageScore = menteeProfile.getLanguage().equalsIgnoreCase(candidateProfile.getLanguage()) ? 15 : 0;
+        int friendScore = areFriends(menteeProfile.getUser(), candidate) ? 20 : 0;
         int loadPenalty = (int) Math.min(matchRepo.countByMentorAndStatus(candidate, MentorMatchStatus.ACTIVE) * 8, 24);
-        int score = Math.max(0, consistencyScore + goalScore + timezoneScore + languageScore - loadPenalty);
+        int score = Math.max(0, consistencyScore + goalScore + timezoneScore + languageScore + friendScore - loadPenalty);
 
         List<String> reasons = new ArrayList<>();
         reasons.add(stats.weeklyConsistencyPercent() + "% consistency");
+        if (friendScore > 0) reasons.add("already in your circle");
         if (goalScore > 0) reasons.add("similar goals");
         if (timezoneScore > 0) reasons.add("timezone fit");
         if (languageScore > 0) reasons.add("language match");
@@ -287,7 +379,8 @@ public class AccountabilityService {
                 coins,
                 perfectDays,
                 bestStreak,
-                recentPerfectDays
+                recentPerfectDays,
+                historyDays
         );
     }
 
@@ -443,6 +536,158 @@ public class AccountabilityService {
         );
     }
 
+    private AccountabilityDashboardResponse.MentorshipStatus mentorshipStatusFor(UserStats stats, MentorMatch match) {
+        boolean canFindMentor = canFindMentor(stats);
+        boolean hasMentor = match != null;
+        boolean canChangeMentor = hasMentor && !isMentorLocked(match);
+        Instant lockedUntil = hasMentor && isMentorLocked(match) ? mentorLockedUntil(match) : null;
+        int lockDaysRemaining = lockedUntil == null
+                ? 0
+                : Math.max(1, (int) ChronoUnit.DAYS.between(Instant.now(), lockedUntil) + 1);
+
+        String message;
+        if (!canFindMentor) {
+            int daysRemaining = Math.max(0, 7 - stats.historyDays());
+            message = "Mentor matching unlocks after " + daysRemaining + " more " + (daysRemaining == 1 ? "day" : "days") + " of data.";
+        } else if (!hasMentor) {
+            message = "Find a mentor when you want extra accountability.";
+        } else if (canChangeMentor) {
+            message = "You can change mentor if this match is not helping.";
+        } else {
+            message = "This mentor match is locked for " + lockDaysRemaining + " more " + (lockDaysRemaining == 1 ? "day" : "days") + ".";
+        }
+
+        return new AccountabilityDashboardResponse.MentorshipStatus(
+                canFindMentor,
+                hasMentor,
+                canChangeMentor,
+                lockedUntil,
+                lockDaysRemaining,
+                message
+        );
+    }
+
+    private AccountabilityDashboardResponse.SocialDashboard socialDashboardFor(User user) {
+        List<User> friends = acceptedFriends(user);
+        return new AccountabilityDashboardResponse.SocialDashboard(
+                friends.size(),
+                friends.stream()
+                        .map(this::toSocialActivity)
+                        .limit(10)
+                        .toList(),
+                suggestedFriends(user).stream()
+                        .map(candidate -> toFriendSummary(candidate.user()))
+                        .limit(5)
+                        .toList()
+        );
+    }
+
+    private AccountabilityDashboardResponse.SocialActivity toSocialActivity(User friend) {
+        UserProfile profile = ensureProfile(friend);
+        UserStats stats = statsFor(friend);
+        int progressPercent = progressPercent(stats);
+        String todayKey = LocalDate.now().toString();
+        String kind = progressPercent >= 100 ? "PERFECT_DAY" : stats.weeklyConsistencyPercent() >= 80 ? "CONSISTENCY" : "PROGRESS";
+        String message = switch (kind) {
+            case "PERFECT_DAY" -> "Finished every habit today.";
+            case "CONSISTENCY" -> "Holding a strong week with steady check-ins.";
+            default -> progressPercent > 0
+                    ? "Made progress today without sharing habit details."
+                    : "Still building momentum for today.";
+        };
+
+        return new AccountabilityDashboardResponse.SocialActivity(
+                "friend-" + friend.getId() + "-" + todayKey,
+                friend.getId(),
+                profile.getDisplayName(),
+                message,
+                stats.weeklyConsistencyPercent(),
+                progressPercent,
+                kind,
+                null
+        );
+    }
+
+    private AccountabilityDashboardResponse.FriendSummary toFriendSummary(User friend) {
+        UserProfile profile = ensureProfile(friend);
+        UserStats stats = statsFor(friend);
+        return new AccountabilityDashboardResponse.FriendSummary(
+                friend.getId(),
+                profile.getDisplayName(),
+                stats.weeklyConsistencyPercent(),
+                progressPercent(stats),
+                profile.getGoals()
+        );
+    }
+
+    private List<User> acceptedFriends(User user) {
+        return friendRepo.findAllByUserAndStatus(user, FriendConnectionStatus.ACCEPTED).stream()
+                .map(connection -> otherUser(connection, user))
+                .toList();
+    }
+
+    private List<FriendCandidate> suggestedFriends(User user) {
+        UserProfile profile = ensureProfile(user);
+        Set<Long> connectedUserIds = connectedUserIds(user);
+        return userRepo.findAll().stream()
+                .filter(candidate -> !candidate.getId().equals(user.getId()))
+                .filter(candidate -> !connectedUserIds.contains(candidate.getId()))
+                .map(candidate -> {
+                    UserProfile candidateProfile = ensureProfile(candidate);
+                    UserStats stats = statsFor(candidate);
+                    int goalScore = (int) Math.round(goalOverlap(profile.getGoals(), candidateProfile.getGoals()) * 30);
+                    int score = stats.weeklyConsistencyPercent() + goalScore;
+                    return new FriendCandidate(candidate, score);
+                })
+                .sorted(Comparator.comparingInt(FriendCandidate::score).reversed())
+                .limit(10)
+                .toList();
+    }
+
+    private Set<Long> connectedUserIds(User user) {
+        return friendRepo.findAllByUserAndStatusIn(
+                        user,
+                        List.of(FriendConnectionStatus.PENDING, FriendConnectionStatus.ACCEPTED)
+                ).stream()
+                .map(connection -> otherUser(connection, user).getId())
+                .collect(Collectors.toSet());
+    }
+
+    private User otherUser(FriendConnection connection, User user) {
+        return connection.getRequester().getId().equals(user.getId())
+                ? connection.getAddressee()
+                : connection.getRequester();
+    }
+
+    private int progressPercent(UserStats stats) {
+        if (stats.totalHabits() == 0) return 0;
+        return Math.min(100, (int) Math.round((double) stats.doneToday() / (double) stats.totalHabits() * 100));
+    }
+
+    private boolean canFindMentor(UserStats stats) {
+        return stats.totalHabits() > 0 && stats.historyDays() >= 7;
+    }
+
+    private boolean isMentorLocked(MentorMatch match) {
+        return LIVE_MATCH_STATUSES.contains(match.getStatus()) && Instant.now().isBefore(mentorLockedUntil(match));
+    }
+
+    private Instant mentorLockedUntil(MentorMatch match) {
+        return match.getCreatedAt().plus(MENTOR_LOCK_DAYS, ChronoUnit.DAYS);
+    }
+
+    private void endMatch(MentorMatch match) {
+        match.setStatus(MentorMatchStatus.ENDED);
+        match.setEndedAt(Instant.now());
+        matchRepo.save(match);
+    }
+
+    private boolean areFriends(User left, User right) {
+        return friendRepo.findBetween(left, right)
+                .map(connection -> connection.getStatus() == FriendConnectionStatus.ACCEPTED)
+                .orElse(false);
+    }
+
     private AccountabilityDashboardResponse.WeeklyChallenge weeklyChallengeFor(User user, UserStats stats) {
         int target = 5;
         int score = Math.min(stats.recentPerfectDays(), target);
@@ -563,7 +808,8 @@ public class AccountabilityService {
             int coins,
             int perfectDays,
             int bestStreak,
-            int recentPerfectDays
+            int recentPerfectDays,
+            int historyDays
     ) {
     }
 
@@ -572,6 +818,12 @@ public class AccountabilityService {
             UserStats stats,
             int score,
             List<String> reasons
+    ) {
+    }
+
+    private record FriendCandidate(
+            User user,
+            int score
     ) {
     }
 }

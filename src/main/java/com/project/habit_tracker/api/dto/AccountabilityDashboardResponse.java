@@ -9,8 +9,10 @@ public record AccountabilityDashboardResponse(
         MentorMatch match,
         MenteeDashboard menteeDashboard,
         MentorDashboard mentorDashboard,
+        MentorshipStatus mentorship,
         Rewards rewards,
         WeeklyChallenge weeklyChallenge,
+        SocialDashboard social,
         List<SocialPost> feed,
         List<Notification> notifications
 ) {
@@ -68,6 +70,16 @@ public record AccountabilityDashboardResponse(
     ) {
     }
 
+    public record MentorshipStatus(
+            boolean canFindMentor,
+            boolean hasMentor,
+            boolean canChangeMentor,
+            Instant lockedUntil,
+            int lockDaysRemaining,
+            String message
+    ) {
+    }
+
     public record MenteeSummary(
             Long matchId,
             Long userId,
@@ -107,6 +119,34 @@ public record AccountabilityDashboardResponse(
             String author,
             String message,
             Instant createdAt
+    ) {
+    }
+
+    public record SocialDashboard(
+            int friendCount,
+            List<SocialActivity> updates,
+            List<FriendSummary> suggestions
+    ) {
+    }
+
+    public record SocialActivity(
+            String id,
+            Long userId,
+            String displayName,
+            String message,
+            int weeklyConsistencyPercent,
+            int progressPercent,
+            String kind,
+            Instant createdAt
+    ) {
+    }
+
+    public record FriendSummary(
+            Long userId,
+            String displayName,
+            int weeklyConsistencyPercent,
+            int progressPercent,
+            String goals
     ) {
     }
 

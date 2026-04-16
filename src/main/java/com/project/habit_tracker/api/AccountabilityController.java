@@ -57,6 +57,14 @@ public class AccountabilityController {
         return ResponseEntity.ok(accountabilityService.sendNudge(userId(auth), matchId));
     }
 
+    @PostMapping("/matches/{matchId}/release")
+    public ResponseEntity<AccountabilityDashboardResponse> releaseMatch(
+            Authentication auth,
+            @PathVariable Long matchId
+    ) {
+        return ResponseEntity.ok(accountabilityService.releaseMatch(userId(auth), matchId));
+    }
+
     @GetMapping("/feed")
     public ResponseEntity<List<AccountabilityDashboardResponse.SocialPost>> feed() {
         return ResponseEntity.ok(accountabilityService.feed());
@@ -68,6 +76,30 @@ public class AccountabilityController {
             @Valid @RequestBody SocialPostRequest req
     ) {
         return ResponseEntity.ok(accountabilityService.createPost(userId(auth), req));
+    }
+
+    @GetMapping("/friends/search")
+    public ResponseEntity<List<AccountabilityDashboardResponse.FriendSummary>> searchFriends(
+            Authentication auth,
+            @RequestParam(defaultValue = "") String query
+    ) {
+        return ResponseEntity.ok(accountabilityService.searchFriends(userId(auth), query));
+    }
+
+    @PostMapping("/friends/{friendUserId}")
+    public ResponseEntity<AccountabilityDashboardResponse> requestFriend(
+            Authentication auth,
+            @PathVariable Long friendUserId
+    ) {
+        return ResponseEntity.ok(accountabilityService.requestFriend(userId(auth), friendUserId));
+    }
+
+    @PostMapping("/friends/connections/{connectionId}/accept")
+    public ResponseEntity<AccountabilityDashboardResponse> acceptFriend(
+            Authentication auth,
+            @PathVariable Long connectionId
+    ) {
+        return ResponseEntity.ok(accountabilityService.acceptFriend(userId(auth), connectionId));
     }
 
     @GetMapping("/challenge/weekly")

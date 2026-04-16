@@ -37,4 +37,6 @@ public class MentorMatch {
 
     @Column(nullable = false)
     private Instant createdAt;
+
+    private Instant endedAt;
 }
