@@ -14,7 +14,8 @@ public record AccountabilityDashboardResponse(
         WeeklyChallenge weeklyChallenge,
         SocialDashboard social,
         List<SocialPost> feed,
-        List<Notification> notifications
+        List<Notification> notifications,
+        List<HabitTimeCluster> habitClusters
 ) {
     public record Profile(
             Long userId,
@@ -94,8 +95,26 @@ public record AccountabilityDashboardResponse(
 
     public record Rewards(
             int xp,
-            int coins,
-            List<String> badges
+            List<String> badges,
+            /** How many unique habit-day checks have earned XP today. */
+            int checksToday,
+            /** Daily cap — checks beyond this still count but earn 0 XP. */
+            int dailyCap,
+            /** False when the user has reached the daily cap and will earn 0 XP on the next check. */
+            boolean rewardEligible,
+            /** Number of unused streak freeze tokens. */
+            int freezesAvailable,
+            /** Date keys for which a streak freeze has been used. */
+            List<String> frozenDates
+    ) {
+    }
+
+    public record HabitTimeCluster(
+            Long habitId,
+            String habitTitle,
+            String timeSlot,   // "MORNING" | "AFTERNOON" | "EVENING" | "NIGHT" | "MIXED" | "UNKNOWN"
+            int avgHourOfDay,  // 0-23 average completion hour, -1 if unknown
+            int sampleSize     // number of completions with time data
     ) {
     }
 

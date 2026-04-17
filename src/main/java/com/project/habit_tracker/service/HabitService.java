@@ -12,6 +12,7 @@ import com.project.habit_tracker.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -22,11 +23,14 @@ public class HabitService {
     private final HabitRepository habitRepo;
     private final HabitCheckRepository checkRepo;
     private final UserRepository userRepo;
+    private final RewardService rewardService;
 
-    public HabitService(HabitRepository habitRepo, HabitCheckRepository checkRepo, UserRepository userRepo) {
+    public HabitService(HabitRepository habitRepo, HabitCheckRepository checkRepo,
+                        UserRepository userRepo, RewardService rewardService) {
         this.habitRepo = habitRepo;
         this.checkRepo = checkRepo;
         this.userRepo = userRepo;
+        this.rewardService = rewardService;
     }
 
     private User requireUser(Long userId) {
@@ -85,15 +89,34 @@ public class HabitService {
         Habit habit = habitRepo.findByIdAndUser(habitId, user)
                 .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
 
+        // 1. Rate-limit guard — throws HTTP 429 if exceeded
+        rewardService.checkRateLimit(userId);
+
         HabitCheck hc = checkRepo.findByHabitAndDateKey(habit, dateKey)
                 .orElseGet(() -> HabitCheck.builder().habit(habit).dateKey(dateKey).done(false).build());
 
+        boolean wasAlreadyDone = hc.isDone();
         hc.setDone(done);
+        if (done) {
+            hc.setCompletedAt(Instant.now());
+        } else {
+            hc.setCompletedAt(null);
+        }
         checkRepo.save(hc);
 
-        // Return updated habit shape
+        // 2. Grant or revoke reward (idempotent; respects daily cap)
+        if (done && !wasAlreadyDone) {
+            rewardService.grantCheck(user, habit, dateKey);
+        } else if (!done && wasAlreadyDone) {
+            rewardService.revokeCheck(user, habit, dateKey);
+        }
+
+        // Return the full check map for this habit so callers always have the real state
+        List<HabitCheck> allChecks = checkRepo.findAllByHabitIn(List.of(habit));
         Map<String, Boolean> map = new HashMap<>();
-        if (done) map.put(dateKey, true);
+        for (HabitCheck c : allChecks) {
+            if (c.isDone()) map.put(c.getDateKey(), true);
+        }
         return new HabitResponse(habit.getId(), habit.getTitle(), map);
     }
 }

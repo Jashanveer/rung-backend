@@ -17,4 +17,6 @@ public interface MentorMatchRepository extends JpaRepository<MentorMatch, Long> 
     Optional<MentorMatch> findFirstByMenteeAndStatusInOrderByCreatedAtDesc(User mentee, Collection<MentorMatchStatus> statuses);
 
     long countByMentorAndStatus(User mentor, MentorMatchStatus status);
+
+    List<MentorMatch> findAllByStatusIn(Collection<MentorMatchStatus> statuses);
 }

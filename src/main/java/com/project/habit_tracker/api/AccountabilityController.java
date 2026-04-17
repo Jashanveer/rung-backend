@@ -4,6 +4,7 @@ import com.project.habit_tracker.api.dto.AccountabilityDashboardResponse;
 import com.project.habit_tracker.api.dto.MentorshipMessageRequest;
 import com.project.habit_tracker.api.dto.ProfileRequest;
 import com.project.habit_tracker.api.dto.SocialPostRequest;
+import com.project.habit_tracker.api.dto.UseStreakFreezeRequest;
 import com.project.habit_tracker.security.JwtAuthFilter;
 import com.project.habit_tracker.service.AccountabilityService;
 import jakarta.validation.Valid;
@@ -125,6 +126,14 @@ public class AccountabilityController {
     @GetMapping("/challenge/weekly")
     public ResponseEntity<AccountabilityDashboardResponse.WeeklyChallenge> weeklyChallenge(Authentication auth) {
         return ResponseEntity.ok(accountabilityService.weeklyChallenge(userId(auth)));
+    }
+
+    @PostMapping("/streak-freeze/use")
+    public ResponseEntity<AccountabilityDashboardResponse> useStreakFreeze(
+            Authentication auth,
+            @Valid @RequestBody UseStreakFreezeRequest req
+    ) {
+        return ResponseEntity.ok(accountabilityService.useStreakFreeze(userId(auth), req.dateKey()));
     }
 
     private Long userId(Authentication auth) {

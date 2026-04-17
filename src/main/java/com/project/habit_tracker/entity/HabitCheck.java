@@ -3,6 +3,8 @@ package com.project.habit_tracker.entity;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.Instant;
+
 @Entity
 @Table(
         name = "habit_checks",
@@ -28,4 +30,8 @@ public class HabitCheck {
 
     @Column(nullable = false)
     private boolean done;
+
+    // Nullable — historical rows won't have it
+    @Column(name = "completed_at")
+    private Instant completedAt;
 }

@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.IsoFields;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -36,6 +37,8 @@ public class AccountabilityService {
     private final AccountabilityStreamService streamService;
     private final DeviceTokenService deviceTokenService;
     private final ApnsService apnsService;
+    private final RewardService rewardService;
+    private final StreakFreezeService streakFreezeService;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -48,7 +51,9 @@ public class AccountabilityService {
             FriendConnectionRepository friendRepo,
             AccountabilityStreamService streamService,
             DeviceTokenService deviceTokenService,
-            ApnsService apnsService
+            ApnsService apnsService,
+            RewardService rewardService,
+            StreakFreezeService streakFreezeService
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -61,6 +66,8 @@ public class AccountabilityService {
         this.streamService = streamService;
         this.deviceTokenService = deviceTokenService;
         this.apnsService = apnsService;
+        this.rewardService = rewardService;
+        this.streakFreezeService = streakFreezeService;
     }
 
     @Transactional
@@ -209,6 +216,22 @@ public class AccountabilityService {
         );
     }
 
+    /** Returns the number of habits the user missed today. Used by scheduler. */
+    @Transactional(readOnly = true)
+    public int missedTodayFor(User user) {
+        return statsFor(user).missedToday();
+    }
+
+    @Transactional
+    public AccountabilityDashboardResponse useStreakFreeze(Long userId, String dateKey) {
+        User user = requireUser(userId);
+        boolean used = streakFreezeService.useFreeze(user, dateKey);
+        if (!used) {
+            throw new IllegalStateException("No streak freeze tokens available.");
+        }
+        return dashboard(userId);
+    }
+
     @Transactional
     public AccountabilityDashboardResponse createPost(Long userId, SocialPostRequest req) {
         User author = requireUser(userId);
@@ -317,11 +340,20 @@ public class AccountabilityService {
                         mentorMatches.stream().map(this::toMenteeSummary).toList()
                 ),
                 mentorshipStatusFor(stats, ownMatch),
-                new AccountabilityDashboardResponse.Rewards(stats.xp(), stats.coins(), badgesFor(stats)),
+                new AccountabilityDashboardResponse.Rewards(
+                        stats.xp(),
+                        badgesFor(stats),
+                        stats.checksToday(),
+                        RewardService.DAILY_GRANT_CAP,
+                        stats.rewardEligible(),
+                        streakFreezeService.availableFreezes(user),
+                        streakFreezeService.frozenDates(user)
+                ),
                 weeklyChallengeFor(user, stats),
                 socialDashboardFor(user),
                 feed(),
-                notificationsFor(stats, ownMatch, mentorMatches)
+                notificationsFor(stats, ownMatch, mentorMatches),
+                habitClustersFor(user)
         );
     }
 
@@ -411,8 +443,10 @@ public class AccountabilityService {
         boolean needsMentor = hasSevenDays && totalHabits > 0 && weeklyConsistency < 0.58;
         String level = levelName(totalChecks, weeklyConsistency, bestStreak, hasSevenDays);
         int accountabilityScore = Math.min(100, (int) Math.round(weeklyConsistency * 70 + progressToday * 30));
-        int xp = totalChecks * 12 + perfectDays * 35 + bestStreak * 20;
-        int coins = totalChecks * 3 + perfectDays * 25;
+        // XP comes from persisted grants — idempotent and cap-aware
+        int xp = rewardService.totalXp(user);
+        int checksToday    = rewardService.checksGrantedToday(user);
+        boolean rewardEligible = rewardService.isRewardEligible(user);
         int recentPerfectDays = recentPerfectDays(habits, checks);
 
         return new UserStats(
@@ -427,11 +461,12 @@ public class AccountabilityService {
                 mentorEligible,
                 needsMentor,
                 xp,
-                coins,
                 perfectDays,
                 bestStreak,
                 recentPerfectDays,
-                historyDays
+                historyDays,
+                checksToday,
+                rewardEligible
         );
     }
 
@@ -742,20 +777,91 @@ public class AccountabilityService {
     }
 
     private AccountabilityDashboardResponse.WeeklyChallenge weeklyChallengeFor(User user, UserStats stats) {
-        int target = 5;
+        WeeklyChallengeTemplate template = weeklyChallengeTemplate(user, stats);
+        int target = template.targetPerfectDays();
         int score = Math.min(stats.recentPerfectDays(), target);
+        String displayName = ensureProfile(user).getDisplayName();
         return new AccountabilityDashboardResponse.WeeklyChallenge(
-                "5 focused days",
-                "Complete every active habit on 5 days this week.",
+                template.title(),
+                template.description(),
                 score,
                 target,
-                Math.max(1, 4 - Math.min(score, 3)),
+                1,
                 List.of(
-                        new AccountabilityDashboardResponse.LeaderboardEntry("Maya", 5, false),
-                        new AccountabilityDashboardResponse.LeaderboardEntry(ensureProfile(user).getDisplayName(), score, true),
-                        new AccountabilityDashboardResponse.LeaderboardEntry("Leo", 3, false)
+                        new AccountabilityDashboardResponse.LeaderboardEntry(displayName, score, true)
                 )
         );
+    }
+
+    private WeeklyChallengeTemplate weeklyChallengeTemplate(User user, UserStats stats) {
+        int week = LocalDate.now().get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+        int selector = Math.floorMod(Objects.hash(user.getId(), week, stats.level()), 5);
+
+        if (stats.totalHabits() == 0) {
+            return new WeeklyChallengeTemplate(
+                    "Start your first streak",
+                    "Add a habit and complete it on 3 days this week.",
+                    3
+            );
+        }
+
+        if (stats.weeklyConsistencyPercent() < 45) {
+            return switch (selector % 2) {
+                case 0 -> new WeeklyChallengeTemplate(
+                        "3-day reset",
+                        "Complete every active habit on 3 days this week.",
+                        3
+                );
+                default -> new WeeklyChallengeTemplate(
+                        "Small wins week",
+                        "Aim for 3 perfect days. Keep the target reachable and repeatable.",
+                        3
+                );
+            };
+        }
+
+        if (stats.weeklyConsistencyPercent() < 75) {
+            return switch (selector % 2) {
+                case 0 -> new WeeklyChallengeTemplate(
+                        "Consistency climb",
+                        "Complete every active habit on 4 days this week.",
+                        4
+                );
+                default -> new WeeklyChallengeTemplate(
+                        "Four focused days",
+                        "Stack 4 perfect days before the week ends.",
+                        4
+                );
+            };
+        }
+
+        return switch (selector) {
+            case 0 -> new WeeklyChallengeTemplate(
+                    "5 focused days",
+                    "Complete every active habit on 5 days this week.",
+                    5
+            );
+            case 1 -> new WeeklyChallengeTemplate(
+                    "Streak builder",
+                    "Protect your rhythm with 5 perfect days this week.",
+                    5
+            );
+            case 2 -> new WeeklyChallengeTemplate(
+                    "Elite consistency",
+                    "Push for 6 perfect days while keeping the pace sustainable.",
+                    6
+            );
+            case 3 -> new WeeklyChallengeTemplate(
+                    "No-zero week",
+                    "Finish every active habit on at least 5 days this week.",
+                    5
+            );
+            default -> new WeeklyChallengeTemplate(
+                    "Strong finish",
+                    "Close the week with 5 perfect days.",
+                    5
+            );
+        };
     }
 
     private List<AccountabilityDashboardResponse.Notification> notificationsFor(
@@ -795,6 +901,78 @@ public class AccountabilityService {
         if (stats.bestStreak() >= 7) badges.add("7-Day Streak");
         if (stats.mentorEligible()) badges.add("Mentor Eligible");
         return badges;
+    }
+
+    private List<AccountabilityDashboardResponse.HabitTimeCluster> habitClustersFor(User user) {
+        List<Habit> habits = habitRepo.findAllByUser(user);
+        if (habits.isEmpty()) return List.of();
+
+        UserProfile profile = ensureProfile(user);
+        ZoneId zone;
+        try {
+            zone = ZoneId.of(profile.getTimezone());
+        } catch (Exception e) {
+            zone = ZoneId.systemDefault();
+        }
+        final ZoneId userZone = zone;
+
+        List<HabitCheck> checks = checkRepo.findAllByHabitIn(habits);
+        // Group done checks that have completedAt by habitId
+        Map<Long, List<HabitCheck>> timedByHabit = checks.stream()
+                .filter(HabitCheck::isDone)
+                .filter(hc -> hc.getCompletedAt() != null)
+                .collect(Collectors.groupingBy(hc -> hc.getHabit().getId()));
+
+        return habits.stream()
+                .sorted(Comparator.comparingLong(Habit::getId))
+                .map(habit -> {
+                    List<HabitCheck> timed = timedByHabit.getOrDefault(habit.getId(), List.of());
+                    int sampleSize = timed.size();
+                    if (sampleSize < 3) {
+                        return new AccountabilityDashboardResponse.HabitTimeCluster(
+                                habit.getId(),
+                                habit.getTitle(),
+                                "UNKNOWN",
+                                -1,
+                                sampleSize
+                        );
+                    }
+                    // Compute hours in user's timezone
+                    List<Integer> hours = timed.stream()
+                            .map(hc -> hc.getCompletedAt().atZone(userZone).getHour())
+                            .toList();
+                    double avgHour = hours.stream().mapToInt(Integer::intValue).average().orElse(0);
+                    int avgHourInt = (int) Math.round(avgHour);
+
+                    // Compute standard deviation
+                    double variance = hours.stream()
+                            .mapToDouble(h -> Math.pow(h - avgHour, 2))
+                            .average()
+                            .orElse(0);
+                    double stdDev = Math.sqrt(variance);
+
+                    String timeSlot;
+                    if (stdDev > 4) {
+                        timeSlot = "MIXED";
+                    } else if (avgHourInt >= 5 && avgHourInt <= 11) {
+                        timeSlot = "MORNING";
+                    } else if (avgHourInt >= 12 && avgHourInt <= 16) {
+                        timeSlot = "AFTERNOON";
+                    } else if (avgHourInt >= 17 && avgHourInt <= 20) {
+                        timeSlot = "EVENING";
+                    } else {
+                        timeSlot = "NIGHT";
+                    }
+
+                    return new AccountabilityDashboardResponse.HabitTimeCluster(
+                            habit.getId(),
+                            habit.getTitle(),
+                            timeSlot,
+                            avgHourInt,
+                            sampleSize
+                    );
+                })
+                .toList();
     }
 
     private String mentorTip(UserStats stats) {
@@ -872,11 +1050,12 @@ public class AccountabilityService {
             boolean mentorEligible,
             boolean needsMentor,
             int xp,
-            int coins,
             int perfectDays,
             int bestStreak,
             int recentPerfectDays,
-            int historyDays
+            int historyDays,
+            int checksToday,
+            boolean rewardEligible
     ) {
     }
 
@@ -898,6 +1077,13 @@ public class AccountabilityService {
             Long matchId,
             Long userId,
             Instant at
+    ) {
+    }
+
+    private record WeeklyChallengeTemplate(
+            String title,
+            String description,
+            int targetPerfectDays
     ) {
     }
 }

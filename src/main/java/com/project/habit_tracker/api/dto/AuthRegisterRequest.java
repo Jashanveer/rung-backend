@@ -9,6 +9,7 @@ public record AuthRegisterRequest(
         @NotBlank @Size(min = 3, max = 30) @Pattern(regexp = "^[A-Za-z0-9_]+$") String username,
         @Email @NotBlank String email,
         @Size(min = 8, max = 100) String password,
-        @Size(max = 512) String avatarUrl
+        @Size(max = 512) String avatarUrl,
+        @NotBlank @Pattern(regexp = "^\\d{6}$") String verificationCode
 ) {
 }
