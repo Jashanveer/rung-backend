@@ -3,12 +3,13 @@ package com.project.habit_tracker.service;
 import com.project.habit_tracker.api.dto.AccountabilityDashboardResponse;
 import com.project.habit_tracker.api.dto.MentorshipMessageRequest;
 import com.project.habit_tracker.api.dto.ProfileRequest;
-import com.project.habit_tracker.api.dto.SocialPostRequest;
 import com.project.habit_tracker.entity.*;
 import com.project.habit_tracker.repository.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import org.springframework.data.domain.PageRequest;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -232,37 +233,9 @@ public class AccountabilityService {
         return dashboard(userId);
     }
 
-    @Transactional
-    public AccountabilityDashboardResponse createPost(Long userId, SocialPostRequest req) {
-        User author = requireUser(userId);
-        postRepo.save(SocialPost.builder()
-                .author(author)
-                .message(req.message().trim())
-                .createdAt(Instant.now())
-                .build());
-        return dashboard(userId);
-    }
-
-    @Transactional
-    public List<AccountabilityDashboardResponse.SocialPost> feed() {
-        return postRepo.findTop25ByOrderByCreatedAtDesc().stream()
+    private List<AccountabilityDashboardResponse.SocialPost> feed(int limit) {
+        return postRepo.findAllByOrderByCreatedAtDesc(PageRequest.of(0, limit)).stream()
                 .map(this::toSocialPost)
-                .toList();
-    }
-
-    @Transactional
-    public List<AccountabilityDashboardResponse.FriendSummary> searchFriends(Long userId, String query) {
-        User user = requireUser(userId);
-        String trimmed = query == null ? "" : query.trim();
-        List<User> candidates = trimmed.isBlank()
-                ? suggestedFriends(user).stream().map(FriendCandidate::user).toList()
-                : userRepo.searchByIdentity(userId, trimmed).stream().limit(10).toList();
-
-        Set<Long> connectedUserIds = connectedUserIds(user);
-        return candidates.stream()
-                .filter(candidate -> !connectedUserIds.contains(candidate.getId()))
-                .map(this::toFriendSummary)
-                .limit(10)
                 .toList();
     }
 
@@ -292,29 +265,6 @@ public class AccountabilityService {
         }
 
         return dashboard(userId);
-    }
-
-    @Transactional
-    public AccountabilityDashboardResponse acceptFriend(Long userId, Long connectionId) {
-        User user = requireUser(userId);
-        FriendConnection connection = friendRepo.findById(connectionId)
-                .orElseThrow(() -> new IllegalArgumentException("Friend request not found"));
-        if (!connection.getAddressee().getId().equals(user.getId())) {
-            throw new IllegalArgumentException("Only the addressee can accept this friend request");
-        }
-
-        connection.setStatus(FriendConnectionStatus.ACCEPTED);
-        connection.setUpdatedAt(Instant.now());
-        friendRepo.save(connection);
-
-        return dashboard(userId);
-    }
-
-    @Transactional
-    public AccountabilityDashboardResponse.WeeklyChallenge weeklyChallenge(Long userId) {
-        User user = requireUser(userId);
-        UserStats stats = statsFor(user);
-        return weeklyChallengeFor(user, stats);
     }
 
     private AccountabilityDashboardResponse dashboardFor(
@@ -351,7 +301,7 @@ public class AccountabilityService {
                 ),
                 weeklyChallengeFor(user, stats),
                 socialDashboardFor(user),
-                feed(),
+                feed(20),
                 notificationsFor(stats, ownMatch, mentorMatches),
                 habitClustersFor(user)
         );

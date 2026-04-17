@@ -3,16 +3,19 @@ package com.project.habit_tracker.api;
 import com.project.habit_tracker.api.dto.CheckUpdateRequest;
 import com.project.habit_tracker.api.dto.HabitCreateRequest;
 import com.project.habit_tracker.api.dto.HabitResponse;
-import com.project.habit_tracker.api.dto.HabitUpdateRequest;
 import com.project.habit_tracker.security.JwtAuthFilter;
 import com.project.habit_tracker.service.HabitService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
+@Validated
 @RestController
 @RequestMapping("/api/habits")
 public class HabitController {
@@ -36,21 +39,16 @@ public class HabitController {
         return ResponseEntity.ok(habitService.createHabit(userId(auth), req));
     }
 
-    @PutMapping("/{habitId}")
-    public ResponseEntity<HabitResponse> update(Authentication auth, @PathVariable Long habitId,
-                                                @Valid @RequestBody HabitUpdateRequest req) {
-        return ResponseEntity.ok(habitService.updateHabitTitle(userId(auth), habitId, req));
-    }
-
     @DeleteMapping("/{habitId}")
-    public ResponseEntity<Void> delete(Authentication auth, @PathVariable Long habitId) {
+    public ResponseEntity<Map<String, Object>> delete(Authentication auth, @PathVariable Long habitId) {
         habitService.deleteHabit(userId(auth), habitId);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(Map.of());
     }
 
     @PutMapping("/{habitId}/checks/{dateKey}")
     public ResponseEntity<HabitResponse> setCheck(Authentication auth,
                                                   @PathVariable Long habitId,
+                                                  @Pattern(regexp = "^\\d{4}-\\d{2}-\\d{2}$", message = "dateKey must be yyyy-MM-dd")
                                                   @PathVariable String dateKey,
                                                   @Valid @RequestBody CheckUpdateRequest req) {
 

@@ -1,26 +1,37 @@
 package com.project.habit_tracker.service;
 
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Sends transactional and scheduled emails.
  *
- * Gracefully skips if MAIL_HOST is not configured — just logs a warning.
- * Uses plain-text bodies (no template engine dependency).
+ * Verification and welcome emails use HTML templates from
+ * src/main/resources/templates/. Password reset and weekly reflection
+ * use plain text.
  *
- * Set these environment variables to enable email:
+ * Gracefully skips all sending if MAIL_HOST is not configured.
+ *
+ * Environment variables:
  *   MAIL_HOST        SMTP server host (e.g. smtp.gmail.com)
  *   MAIL_PORT        SMTP port (default 587)
  *   MAIL_USERNAME    SMTP username / email address
  *   MAIL_PASSWORD    SMTP password or app-specific password
  *   MAIL_FROM        From address (default noreply@habit-tracker.app)
+ *   APP_URL          Deep-link or App Store URL shown in the welcome email
  */
 @Service
 public class EmailService {
@@ -38,6 +49,9 @@ public class EmailService {
     @Value("${app.reset-base-url:https://habit-tracker.app/reset}")
     private String resetBaseUrl;
 
+    @Value("${app.email.app-url:https://habit-tracker.app}")
+    private String appUrl;
+
     public EmailService(JavaMailSender mailSender) {
         this.mailSender = mailSender;
     }
@@ -47,50 +61,32 @@ public class EmailService {
     /** Sent immediately after a new user registers. */
     public void sendWelcome(String toEmail, String displayName) {
         if (!emailEnabled()) return;
-        String subject = "Welcome to Habit Tracker, " + displayName + "!";
-        String body = """
-                Hi %s,
-
-                Welcome aboard! You've just taken the first step toward building lasting habits.
-
-                Here's how to get started:
-                  • Add your first habit on the main screen
-                  • Check it off each day to build a streak
-                  • After 7 days of data, you unlock mentor matching
-
-                Your consistency score improves every week you show up. Small steps, done daily, compound into remarkable results.
-
-                See you in there,
-                The Habit Tracker Team
-                """.formatted(displayName);
-        send(toEmail, subject, body);
+        String html = renderTemplate("templates/welcome.html", Map.of(
+                "{{FIRST_NAME}}", displayName,
+                "{{APP_URL}}",    appUrl,
+                "{{USER_EMAIL}}", toEmail
+        ));
+        sendHtml(toEmail, "Welcome to Habit Tracker, " + displayName + "!", html);
     }
 
     /** Sent before account creation to verify email ownership. */
     public void sendEmailVerification(String toEmail, String code, long ttlMinutes) {
-        if (!emailEnabled()) return;
-        String subject = "Verify your Habit Tracker email";
-        String body = """
-                Hi,
-
-                Use this code to finish creating your Habit Tracker account:
-
-                  %s
-
-                This code expires in %d minutes.
-
-                If you didn't request this, you can safely ignore this email.
-
-                The Habit Tracker Team
-                """.formatted(code, ttlMinutes);
-        send(toEmail, subject, body);
+        if (!emailEnabled()) {
+            log.warn("Email not configured — verification code for {} : {}", toEmail, code);
+            return;
+        }
+        String html = renderTemplate("templates/email-verification.html", Map.of(
+                "{{OTP_CODE}}",            code,
+                "{{OTP_EXPIRY_MINUTES}}", String.valueOf(ttlMinutes),
+                "{{USER_EMAIL}}",          toEmail
+        ));
+        sendHtml(toEmail, "Verify your Habit Tracker email", html);
     }
 
     /** Sent when a user requests a password reset. */
     public void sendPasswordReset(String toEmail, String displayName, String token) {
         if (!emailEnabled()) return;
         String resetLink = resetBaseUrl + "?token=" + token;
-        String subject = "Reset your Habit Tracker password";
         String body = """
                 Hi %s,
 
@@ -105,24 +101,82 @@ public class EmailService {
                 Stay consistent,
                 The Habit Tracker Team
                 """.formatted(displayName, resetLink);
-        send(toEmail, subject, body);
+        sendPlain(toEmail, "Reset your Habit Tracker password", body);
     }
 
     /** Weekly reflection email — sent every Sunday. Personalised from stats. */
     public void sendWeeklyReflection(String toEmail, String displayName, WeeklyReflectionData data) {
         if (!emailEnabled()) return;
-        String subject = "Your habit week in review — " + data.level();
-        String body = buildReflectionBody(displayName, data);
-        send(toEmail, subject, body);
+        sendPlain(toEmail, "Your habit week in review — " + data.level(),
+                buildReflectionBody(displayName, data));
     }
 
-    // ── Body builder ────────────────────────────────────────────────────────
+    // ── Template rendering ───────────────────────────────────────────────────
+
+    private String renderTemplate(String path, Map<String, String> vars) {
+        String html = loadTemplate(path);
+        for (Map.Entry<String, String> entry : vars.entrySet()) {
+            html = html.replace(entry.getKey(), entry.getValue());
+        }
+        return html;
+    }
+
+    private String loadTemplate(String path) {
+        try {
+            ClassPathResource resource = new ClassPathResource(path);
+            return resource.getContentAsString(StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to load email template: " + path, e);
+        }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private boolean emailEnabled() {
+        if (mailHost == null || mailHost.isBlank()) {
+            log.debug("Email sending skipped — MAIL_HOST not configured.");
+            return false;
+        }
+        return true;
+    }
+
+    // ── Senders ──────────────────────────────────────────────────────────────
+
+    private void sendHtml(String to, String subject, String htmlBody) {
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromAddress);
+            helper.setTo(to);
+            helper.setSubject(subject);
+            helper.setText(htmlBody, true);
+            mailSender.send(message);
+            log.info("Email sent to {} — subject: {}", to, subject);
+        } catch (MessagingException | RuntimeException e) {
+            log.error("Failed to send email to {}: {}", to, e.getMessage());
+        }
+    }
+
+    private void sendPlain(String to, String subject, String body) {
+        try {
+            SimpleMailMessage msg = new SimpleMailMessage();
+            msg.setFrom(fromAddress);
+            msg.setTo(to);
+            msg.setSubject(subject);
+            msg.setText(body);
+            mailSender.send(msg);
+            log.info("Email sent to {} — subject: {}", to, subject);
+        } catch (RuntimeException e) {
+            log.error("Failed to send email to {}: {}", to, e.getMessage());
+        }
+    }
+
+    // ── Plain-text body builders ─────────────────────────────────────────────
 
     private String buildReflectionBody(String displayName, WeeklyReflectionData data) {
         StringBuilder sb = new StringBuilder();
         sb.append("Hi ").append(displayName).append(",\n\n");
 
-        // Opening — personalised to consistency level
         if (data.weeklyConsistencyPercent() >= 90) {
             sb.append("What a week. You hit ").append(data.weeklyConsistencyPercent())
               .append("% consistency — that puts you in the top tier of habit builders. "
@@ -140,7 +194,6 @@ public class EmailService {
                     + "Sometimes life gets in the way — the important thing is coming back.\n\n");
         }
 
-        // Perfect days
         if (data.perfectDaysThisWeek() >= 5) {
             sb.append("You had ").append(data.perfectDaysThisWeek())
               .append(" perfect days this week. That's extraordinary. "
@@ -151,7 +204,6 @@ public class EmailService {
               .append(" this week. Each one is worth celebrating.\n\n");
         }
 
-        // Streak highlight
         if (data.bestStreak() >= 21) {
             sb.append("Your best streak is ").append(data.bestStreak())
               .append(" days — that's a deeply embedded habit. Protect it.\n\n");
@@ -160,46 +212,17 @@ public class EmailService {
               .append(" days. Keep going — the 21-day threshold is where habits start to feel automatic.\n\n");
         }
 
-        // Badges
         if (!data.badges().isEmpty()) {
             sb.append("Badges earned: ").append(String.join(", ", data.badges())).append(".\n\n");
         }
 
-        // Mentor tip
         if (data.mentorTip() != null && !data.mentorTip().isBlank()) {
             sb.append("This week's focus: ").append(data.mentorTip()).append("\n\n");
         }
 
-        // Closing
         sb.append("See you next week,\n");
         sb.append("The Habit Tracker Team\n");
-
         return sb.toString();
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    private boolean emailEnabled() {
-        if (mailHost == null || mailHost.isBlank()) {
-            log.debug("Email sending skipped — MAIL_HOST not configured.");
-            return false;
-        }
-        return true;
-    }
-
-    private void send(String to, String subject, String body) {
-        try {
-            SimpleMailMessage msg = new SimpleMailMessage();
-            msg.setFrom(fromAddress);
-            msg.setTo(to);
-            msg.setSubject(subject);
-            msg.setText(body);
-            mailSender.send(msg);
-            log.info("Email sent to {} — subject: {}", to, subject);
-        } catch (Exception e) {
-            // Never let an email failure crash the caller
-            log.error("Failed to send email to {}: {}", to, e.getMessage());
-        }
     }
 
     // ── Data carrier ─────────────────────────────────────────────────────────

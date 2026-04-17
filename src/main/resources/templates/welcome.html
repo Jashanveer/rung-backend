@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to Habit Tracker</title>
+  <style>
+    :root{
+      --bg:#f3f4f6;
+      --card:#ffffff;
+      --text:#31343a;
+      --muted:#767c85;
+      --line:#e6e8eb;
+      --primary:#2f95dc;
+      --primary-soft:#eaf4fc;
+      --green:#44b36f;
+      --green-soft:#edf8f0;
+      --gold:#e7b93e;
+      --gold-soft:#fff8e7;
+      --purple:#8d7cf2;
+      --purple-soft:#f3efff;
+      --shadow:0 22px 52px rgba(0,0,0,.11);
+      --radius:30px;
+    }
+
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      padding:24px;
+      background:linear-gradient(180deg,#f5f6f8 0%, #eef1f4 100%);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      color:var(--text);
+    }
+
+    .shell{
+      max-width:680px;
+      margin:0 auto;
+      padding:28px 18px;
+    }
+
+    .brand{
+      text-align:center;
+      font-weight:700;
+      font-size:28px;
+      margin-bottom:18px;
+      color:#40434a;
+      letter-spacing:-0.02em;
+    }
+
+    .hero{
+      background:rgba(255,255,255,.90);
+      border:1px solid rgba(0,0,0,.06);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      padding:42px 34px 30px;
+      backdrop-filter: blur(10px);
+    }
+
+    .eyebrow{
+      display:inline-block;
+      padding:10px 16px;
+      border-radius:999px;
+      background:var(--green-soft);
+      color:var(--green);
+      font-weight:700;
+      font-size:13px;
+      letter-spacing:.02em;
+      margin-bottom:18px;
+    }
+
+    h1{
+      margin:0 0 10px 0;
+      font-size:38px;
+      line-height:1.08;
+      letter-spacing:-0.03em;
+      text-align:center;
+    }
+
+    .subtitle{
+      margin:0 auto 28px auto;
+      max-width:520px;
+      text-align:center;
+      color:var(--muted);
+      font-size:16px;
+      line-height:1.65;
+    }
+
+    .cta-wrap{
+      text-align:center;
+      margin:26px 0 28px;
+    }
+
+    .cta{
+      display:inline-block;
+      background:var(--primary);
+      color:#fff !important;
+      text-decoration:none;
+      font-weight:700;
+      padding:16px 28px;
+      border-radius:18px;
+      font-size:16px;
+      box-shadow:0 10px 24px rgba(47,149,220,.22);
+    }
+
+    .grid{
+      margin-top:14px;
+      display:grid;
+      grid-template-columns:repeat(2,1fr);
+      gap:16px;
+    }
+
+    .item{
+      border:1px solid var(--line);
+      border-radius:22px;
+      padding:18px;
+      background:#fbfbfc;
+    }
+
+    .icon{
+      width:46px;
+      height:46px;
+      border-radius:16px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font-size:22px;
+      margin-bottom:12px;
+    }
+
+    .icon.blue{background:var(--primary-soft)}
+    .icon.green{background:var(--green-soft)}
+    .icon.gold{background:var(--gold-soft)}
+    .icon.purple{background:var(--purple-soft)}
+
+    .item h3{
+      margin:0 0 8px 0;
+      font-size:18px;
+      letter-spacing:-0.02em;
+    }
+
+    .item p{
+      margin:0;
+      color:var(--muted);
+      font-size:14px;
+      line-height:1.6;
+    }
+
+    .steps{
+      margin-top:22px;
+      padding:18px 20px;
+      border-radius:22px;
+      background:#f9fafb;
+      border:1px solid var(--line);
+    }
+
+    .steps h2{
+      margin:0 0 12px 0;
+      font-size:18px;
+    }
+
+    .steps ol{
+      padding-left:18px;
+      margin:0;
+      color:#4c5158;
+    }
+
+    .steps li{
+      margin:8px 0;
+      line-height:1.6;
+    }
+
+    .footer{
+      margin-top:18px;
+      text-align:center;
+      color:#8a9098;
+      font-size:12px;
+      line-height:1.7;
+      padding:0 12px;
+    }
+
+    @media only screen and (max-width: 600px){
+      body{padding:12px}
+      .shell{padding:12px 0}
+      .hero{padding:28px 18px 22px;border-radius:22px}
+      h1{font-size:31px}
+      .grid{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="brand">Habit Tracker</div>
+
+    <div class="hero">
+      <div style="text-align:center;">
+        <span class="eyebrow">Welcome aboard</span>
+      </div>
+
+      <h1>Hi {{FIRST_NAME}}, your journey starts now.</h1>
+      <p class="subtitle">
+        Thanks for joining Habit Tracker. Build momentum with small daily wins, stay accountable, and unlock mentor matching as your consistency grows.
+      </p>
+
+      <div class="cta-wrap">
+        <a href="{{APP_URL}}" class="cta">Open Habit Tracker</a>
+      </div>
+
+      <div class="grid">
+        <div class="item">
+          <div class="icon blue">&#10003;</div>
+          <h3>Track daily habits</h3>
+          <p>Create your first habits and keep your routine simple, visible, and easy to maintain.</p>
+        </div>
+
+        <div class="item">
+          <div class="icon gold">&#127942;</div>
+          <h3>Build streaks &amp; XP</h3>
+          <p>Stay consistent, collect progress, and turn small actions into momentum over time.</p>
+        </div>
+
+        <div class="item">
+          <div class="icon green">&#128101;</div>
+          <h3>Grow with accountability</h3>
+          <p>Your social circle and mentor features become more useful as your data becomes more meaningful.</p>
+        </div>
+
+        <div class="item">
+          <div class="icon purple">&#10052;</div>
+          <h3>Recover without quitting</h3>
+          <p>Use safeguards like freezes so one imperfect day does not break your long-term progress.</p>
+        </div>
+      </div>
+
+      <div class="steps">
+        <h2>Best next steps</h2>
+        <ol>
+          <li>Create 1 to 3 habits you can realistically complete every day.</li>
+          <li>Check in daily for your weekly consistency score.</li>
+          <li>Keep tracking for 7 days so mentor matching can become more accurate.</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="footer">
+      You're receiving this because you created an account at {{USER_EMAIL}}.<br />
+      Habit Tracker &bull; Small wins, every day
+    </div>
+  </div>
+</body>
+</html>

@@ -3,7 +3,6 @@ package com.project.habit_tracker.api;
 import com.project.habit_tracker.api.dto.AccountabilityDashboardResponse;
 import com.project.habit_tracker.api.dto.MentorshipMessageRequest;
 import com.project.habit_tracker.api.dto.ProfileRequest;
-import com.project.habit_tracker.api.dto.SocialPostRequest;
 import com.project.habit_tracker.api.dto.UseStreakFreezeRequest;
 import com.project.habit_tracker.security.JwtAuthFilter;
 import com.project.habit_tracker.service.AccountabilityService;
@@ -11,11 +10,13 @@ import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
+@Validated
 @RestController
 @RequestMapping("/api/accountability")
 public class AccountabilityController {
@@ -86,46 +87,12 @@ public class AccountabilityController {
         return ResponseEntity.ok(accountabilityService.releaseMatch(userId(auth), matchId));
     }
 
-    @GetMapping("/feed")
-    public ResponseEntity<List<AccountabilityDashboardResponse.SocialPost>> feed() {
-        return ResponseEntity.ok(accountabilityService.feed());
-    }
-
-    @PostMapping("/feed")
-    public ResponseEntity<AccountabilityDashboardResponse> createPost(
-            Authentication auth,
-            @Valid @RequestBody SocialPostRequest req
-    ) {
-        return ResponseEntity.ok(accountabilityService.createPost(userId(auth), req));
-    }
-
-    @GetMapping("/friends/search")
-    public ResponseEntity<List<AccountabilityDashboardResponse.FriendSummary>> searchFriends(
-            Authentication auth,
-            @RequestParam(defaultValue = "") String query
-    ) {
-        return ResponseEntity.ok(accountabilityService.searchFriends(userId(auth), query));
-    }
-
     @PostMapping("/friends/{friendUserId}")
     public ResponseEntity<AccountabilityDashboardResponse> requestFriend(
             Authentication auth,
             @PathVariable Long friendUserId
     ) {
         return ResponseEntity.ok(accountabilityService.requestFriend(userId(auth), friendUserId));
-    }
-
-    @PostMapping("/friends/connections/{connectionId}/accept")
-    public ResponseEntity<AccountabilityDashboardResponse> acceptFriend(
-            Authentication auth,
-            @PathVariable Long connectionId
-    ) {
-        return ResponseEntity.ok(accountabilityService.acceptFriend(userId(auth), connectionId));
-    }
-
-    @GetMapping("/challenge/weekly")
-    public ResponseEntity<AccountabilityDashboardResponse.WeeklyChallenge> weeklyChallenge(Authentication auth) {
-        return ResponseEntity.ok(accountabilityService.weeklyChallenge(userId(auth)));
     }
 
     @PostMapping("/streak-freeze/use")

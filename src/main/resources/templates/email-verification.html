@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verify your email</title>
+  <style>
+    :root{
+      --bg:#f3f4f6;
+      --card:#ffffff;
+      --text:#2f3136;
+      --muted:#7a7f87;
+      --line:#e6e8eb;
+      --primary:#2f95dc;
+      --primary-soft:#eaf4fc;
+      --success:#38b26d;
+      --shadow:0 20px 50px rgba(0,0,0,.10);
+      --radius:28px;
+    }
+
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      padding:24px;
+      background:linear-gradient(180deg,#f5f6f8 0%, #eef1f4 100%);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      color:var(--text);
+    }
+
+    .shell{
+      max-width:640px;
+      margin:0 auto;
+      padding:28px 18px;
+    }
+
+    .brand{
+      text-align:center;
+      font-weight:700;
+      font-size:28px;
+      margin-bottom:18px;
+      color:#40434a;
+      letter-spacing:-0.02em;
+    }
+
+    .card{
+      background:rgba(255,255,255,.88);
+      border:1px solid rgba(0,0,0,.06);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      padding:42px 34px;
+      backdrop-filter: blur(10px);
+    }
+
+    .pill{
+      display:inline-block;
+      padding:10px 16px;
+      border-radius:999px;
+      background:var(--primary-soft);
+      color:var(--primary);
+      font-weight:700;
+      font-size:13px;
+      letter-spacing:.02em;
+      margin-bottom:18px;
+    }
+
+    h1{
+      margin:0 0 10px 0;
+      font-size:36px;
+      line-height:1.1;
+      letter-spacing:-0.03em;
+      text-align:center;
+    }
+
+    .subtitle{
+      margin:0 auto 28px auto;
+      max-width:480px;
+      text-align:center;
+      color:var(--muted);
+      font-size:16px;
+      line-height:1.6;
+    }
+
+    .otp-wrap{
+      margin:28px 0 16px;
+      text-align:center;
+    }
+
+    .otp{
+      display:inline-block;
+      padding:18px 26px;
+      border-radius:22px;
+      background:#f8fafc;
+      border:1px solid var(--line);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
+      font-size:38px;
+      letter-spacing:12px;
+      font-weight:800;
+      color:#23262b;
+    }
+
+    .helper{
+      text-align:center;
+      color:var(--muted);
+      font-size:14px;
+      line-height:1.6;
+      margin:14px 0 0 0;
+    }
+
+    .note{
+      margin-top:26px;
+      padding:16px 18px;
+      border-radius:18px;
+      background:#f8faf9;
+      border:1px solid #e6f0e8;
+      color:#55615b;
+      font-size:14px;
+      line-height:1.6;
+    }
+
+    .footer{
+      margin-top:18px;
+      text-align:center;
+      color:#8a9098;
+      font-size:12px;
+      line-height:1.7;
+      padding:0 12px;
+    }
+
+    .divider{
+      height:1px;
+      background:var(--line);
+      margin:24px 0 20px;
+    }
+
+    @media only screen and (max-width: 600px){
+      body{padding:12px}
+      .shell{padding:12px 0}
+      .card{padding:28px 18px;border-radius:22px}
+      h1{font-size:30px}
+      .otp{font-size:30px;letter-spacing:8px;padding:16px 18px}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="brand">Habit Tracker</div>
+
+    <div class="card">
+      <div style="text-align:center;">
+        <span class="pill">Email verification</span>
+      </div>
+
+      <h1>Verify your email</h1>
+      <p class="subtitle">
+        Welcome to Habit Tracker. Use the verification code below to finish creating your profile and start building consistency.
+      </p>
+
+      <div class="otp-wrap">
+        <div class="otp">{{OTP_CODE}}</div>
+      </div>
+
+      <p class="helper">
+        This code expires in <strong>{{OTP_EXPIRY_MINUTES}} minutes</strong>.
+      </p>
+
+      <div class="divider"></div>
+
+      <div class="note">
+        If you did not create an account with Habit Tracker, you can safely ignore this email.
+      </div>
+    </div>
+
+    <div class="footer">
+      Sent to {{USER_EMAIL}}<br />
+      Habit Tracker &bull; Build small wins every day
+    </div>
+  </div>
+</body>
+</html>

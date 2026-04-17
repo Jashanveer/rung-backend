@@ -18,6 +18,8 @@ public interface RewardGrantRepository extends JpaRepository<RewardGrant, Long> 
 
     void deleteByUserAndHabitAndDateKey(User user, Habit habit, String dateKey);
 
+    void deleteByHabit(Habit habit);
+
     @Query("SELECT COUNT(g) FROM RewardGrant g WHERE g.user = :user AND g.dateKey = :dateKey")
     long countByUserAndDateKey(@Param("user") User user, @Param("dateKey") String dateKey);
 

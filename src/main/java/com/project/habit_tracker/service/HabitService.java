@@ -2,12 +2,12 @@ package com.project.habit_tracker.service;
 
 import com.project.habit_tracker.api.dto.HabitCreateRequest;
 import com.project.habit_tracker.api.dto.HabitResponse;
-import com.project.habit_tracker.api.dto.HabitUpdateRequest;
 import com.project.habit_tracker.entity.Habit;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.repository.HabitCheckRepository;
 import com.project.habit_tracker.repository.HabitRepository;
+import com.project.habit_tracker.repository.RewardGrantRepository;
 import com.project.habit_tracker.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,13 +24,16 @@ public class HabitService {
     private final HabitCheckRepository checkRepo;
     private final UserRepository userRepo;
     private final RewardService rewardService;
+    private final RewardGrantRepository rewardGrantRepo;
 
     public HabitService(HabitRepository habitRepo, HabitCheckRepository checkRepo,
-                        UserRepository userRepo, RewardService rewardService) {
+                        UserRepository userRepo, RewardService rewardService,
+                        RewardGrantRepository rewardGrantRepo) {
         this.habitRepo = habitRepo;
         this.checkRepo = checkRepo;
         this.userRepo = userRepo;
         this.rewardService = rewardService;
+        this.rewardGrantRepo = rewardGrantRepo;
     }
 
     private User requireUser(Long userId) {
@@ -66,19 +69,11 @@ public class HabitService {
     }
 
     @Transactional
-    public HabitResponse updateHabitTitle(Long userId, Long habitId, HabitUpdateRequest req) {
-        User user = requireUser(userId);
-        Habit habit = habitRepo.findByIdAndUser(habitId, user)
-                .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
-        habit.setTitle(req.title());
-        return new HabitResponse(habit.getId(), habit.getTitle(), Map.of());
-    }
-
-    @Transactional
     public void deleteHabit(Long userId, Long habitId) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUser(habitId, user)
                 .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
+        rewardGrantRepo.deleteByHabit(habit);
         checkRepo.deleteAllByHabit(habit);
         habitRepo.delete(habit);
     }

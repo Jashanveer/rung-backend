@@ -6,13 +6,16 @@ import com.project.habit_tracker.api.dto.AuthRegisterRequest;
 import com.project.habit_tracker.api.dto.AuthResponse;
 import com.project.habit_tracker.entity.EmailVerificationCode;
 import com.project.habit_tracker.entity.PasswordResetToken;
+import com.project.habit_tracker.entity.RefreshToken;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.entity.UserProfile;
 import com.project.habit_tracker.repository.EmailVerificationCodeRepository;
 import com.project.habit_tracker.repository.PasswordResetTokenRepository;
+import com.project.habit_tracker.repository.RefreshTokenRepository;
 import com.project.habit_tracker.repository.UserProfileRepository;
 import com.project.habit_tracker.repository.UserRepository;
 import com.project.habit_tracker.security.JwtService;
+import io.jsonwebtoken.JwtException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -40,6 +43,7 @@ public class AuthService {
     private final UserProfileRepository profileRepo;
     private final EmailVerificationCodeRepository emailVerificationCodeRepo;
     private final PasswordResetTokenRepository resetTokenRepo;
+    private final RefreshTokenRepository refreshTokenRepo;
     private final JwtService jwtService;
     private final EmailService emailService;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
@@ -50,6 +54,7 @@ public class AuthService {
             UserProfileRepository profileRepo,
             EmailVerificationCodeRepository emailVerificationCodeRepo,
             PasswordResetTokenRepository resetTokenRepo,
+            RefreshTokenRepository refreshTokenRepo,
             JwtService jwtService,
             EmailService emailService
     ) {
@@ -57,6 +62,7 @@ public class AuthService {
         this.profileRepo = profileRepo;
         this.emailVerificationCodeRepo = emailVerificationCodeRepo;
         this.resetTokenRepo = resetTokenRepo;
+        this.refreshTokenRepo = refreshTokenRepo;
         this.jwtService = jwtService;
         this.emailService = emailService;
     }
@@ -130,11 +136,41 @@ public class AuthService {
         return issueTokens(user);
     }
 
+    @Transactional
     public AuthResponse refresh(AuthRefreshRequest req) {
-        Long userId = jwtService.parseRefreshToken(req.refreshToken());
-        User user = userRepo.findById(userId)
+        String rawToken = req.refreshToken();
+
+        // Validate JWT signature + expiry first
+        Long userId = jwtService.parseRefreshToken(rawToken);
+
+        // Check our DB record — rejects stolen tokens that were already rotated
+        String hash = jwtService.hashToken(rawToken);
+        RefreshToken stored = refreshTokenRepo.findByTokenHash(hash)
                 .orElseThrow(() -> new IllegalArgumentException("Invalid refresh token"));
+
+        if (stored.getUsedAt() != null) {
+            // Token reuse detected — possible theft; invalidate all tokens for this user
+            refreshTokenRepo.deleteByUser(stored.getUser());
+            throw new IllegalArgumentException("Refresh token already used");
+        }
+
+        // Rotate: mark old token consumed
+        stored.setUsedAt(Instant.now());
+        refreshTokenRepo.save(stored);
+
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
         return issueTokens(user);
+    }
+
+    @Transactional
+    public void logout(String rawRefreshToken) {
+        String hash = jwtService.hashToken(rawRefreshToken);
+        refreshTokenRepo.findByTokenHash(hash).ifPresent(stored -> {
+            stored.setUsedAt(Instant.now());
+            refreshTokenRepo.save(stored);
+        });
+        // Always succeed — don't reveal whether the token existed
     }
 
     /**
@@ -239,6 +275,14 @@ public class AuthService {
         String accessToken  = jwtService.createAccessToken(user.getId(), user.getEmail());
         String refreshToken = jwtService.createRefreshToken(user.getId(), user.getEmail());
         long   accessExp    = jwtService.extractExpirationEpochSeconds(accessToken);
+        long   refreshExp   = jwtService.extractExpirationEpochSeconds(refreshToken);
+
+        refreshTokenRepo.save(RefreshToken.builder()
+                .user(user)
+                .tokenHash(jwtService.hashToken(refreshToken))
+                .expiresAt(Instant.ofEpochSecond(refreshExp))
+                .build());
+
         return new AuthResponse(accessToken, refreshToken, accessExp);
     }
 }

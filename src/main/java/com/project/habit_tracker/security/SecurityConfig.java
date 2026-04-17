@@ -29,16 +29,14 @@ public class SecurityConfig {
                 .cors(cors -> {}) // uses corsConfigurationSource() bean
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()   // ✅ preflight
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/**").permitAll()
-                        .requestMatchers("/h2/**").permitAll()
                         .requestMatchers("/api/habits/**").authenticated()
                         .requestMatchers("/api/accountability/**").authenticated()
-                        .requestMatchers("/api/me").authenticated()
-                        .anyRequest().permitAll()
+                        .requestMatchers("/api/devices/**").authenticated()
+                        .anyRequest().denyAll()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
-                .headers(headers -> headers.frameOptions(frame -> frame.disable())) // for H2 console
                 .build();
     }
 

@@ -7,6 +7,8 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Date;
 
@@ -24,6 +26,15 @@ public class JwtService {
             @Value("${app.jwt.expirationMinutes}") long accessTokenExpirationMinutes,
             @Value("${app.jwt.refreshExpirationMinutes:43200}") long refreshTokenExpirationMinutes
     ) {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException(
+                "app.jwt.secret / JWT_SECRET env var is not set. " +
+                "For local dev add it to src/main/resources/application-local.properties"
+            );
+        }
+        if (secret.length() < 32) {
+            throw new IllegalStateException("JWT secret must be at least 32 characters");
+        }
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.issuer = issuer;
         this.accessTokenExpirationMinutes = accessTokenExpirationMinutes;
@@ -72,5 +83,18 @@ public class JwtService {
                 .requireIssuer(issuer)
                 .build()
                 .parseClaimsJws(token);
+    }
+
+    /** SHA-256 hex digest of a raw token string — safe to store in the DB. */
+    public String hashToken(String token) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : hash) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 }

@@ -42,6 +42,8 @@ public class RewardService {
     private final RewardGrantRepository rewardGrantRepo;
 
     // One token-bucket per authenticated userId; buckets are lazily created.
+    // NOTE: in-memory only — does not work correctly across multiple JVM instances.
+    // Replace with a Redis-backed implementation (e.g. Redisson + bucket4j) for multi-pod deployments.
     private final ConcurrentHashMap<Long, TokenBucket> buckets = new ConcurrentHashMap<>();
 
     public RewardService(RewardGrantRepository rewardGrantRepo) {
