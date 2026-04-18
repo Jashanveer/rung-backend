@@ -1,0 +1,7 @@
+ALTER TABLE user_profiles
+    ADD COLUMN IF NOT EXISTS mentor_rating INT NOT NULL DEFAULT 50;
+
+ALTER TABLE mentor_matches
+    ADD COLUMN IF NOT EXISTS ended_reason VARCHAR(500),
+    ADD COLUMN IF NOT EXISTS last_reviewed_at TIMESTAMPTZ;
+

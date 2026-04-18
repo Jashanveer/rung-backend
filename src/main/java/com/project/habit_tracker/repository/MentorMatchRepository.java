@@ -24,6 +24,8 @@ public interface MentorMatchRepository extends JpaRepository<MentorMatch, Long> 
 
     List<MentorMatch> findAllByStatusIn(Collection<MentorMatchStatus> statuses);
 
+    List<MentorMatch> findAllByStatus(MentorMatchStatus status);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM MentorMatch m WHERE m.mentor = :user OR m.mentee = :user")

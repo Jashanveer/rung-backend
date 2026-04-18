@@ -25,7 +25,8 @@ public record AccountabilityDashboardResponse(
             String avatarUrl,
             String timezone,
             String language,
-            String goals
+            String goals,
+            int mentorRating
     ) {
     }
 
@@ -55,7 +56,8 @@ public record AccountabilityDashboardResponse(
             String timezone,
             String language,
             String goals,
-            int weeklyConsistencyPercent
+            int weeklyConsistencyPercent,
+            int mentorRating
     ) {
     }
 

@@ -5,6 +5,7 @@ import com.project.habit_tracker.api.dto.MentorshipMessageRequest;
 import com.project.habit_tracker.api.dto.ProfileRequest;
 import com.project.habit_tracker.entity.*;
 import com.project.habit_tracker.repository.*;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -22,6 +23,10 @@ import java.util.stream.Collectors;
 @Service
 public class AccountabilityService {
     private static final int MENTOR_LOCK_DAYS = 7;
+    private static final int MENTOR_INACTIVE_DAYS = 3;
+    private static final int MENTOR_RATING_DEFAULT = 50;
+    private static final int MENTOR_RATING_MIN = 0;
+    private static final int MENTOR_RATING_MAX = 100;
     private static final List<MentorMatchStatus> LIVE_MATCH_STATUSES = List.of(
             MentorMatchStatus.PENDING,
             MentorMatchStatus.ACTIVE
@@ -40,6 +45,7 @@ public class AccountabilityService {
     private final ApnsService apnsService;
     private final RewardService rewardService;
     private final StreakFreezeService streakFreezeService;
+    private final EmailService emailService;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -54,7 +60,8 @@ public class AccountabilityService {
             DeviceTokenService deviceTokenService,
             ApnsService apnsService,
             RewardService rewardService,
-            StreakFreezeService streakFreezeService
+            StreakFreezeService streakFreezeService,
+            EmailService emailService
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -69,6 +76,7 @@ public class AccountabilityService {
         this.apnsService = apnsService;
         this.rewardService = rewardService;
         this.streakFreezeService = streakFreezeService;
+        this.emailService = emailService;
     }
 
     @Transactional
@@ -78,6 +86,9 @@ public class AccountabilityService {
         UserStats stats = statsFor(user);
 
         Optional<MentorMatch> ownMatch = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(user, LIVE_MATCH_STATUSES);
+        if (ownMatch.isEmpty() && canFindMentor(stats)) {
+            ownMatch = autoAssignMentor(user, profile);
+        }
         List<MentorMatch> mentorMatches = matchRepo.findAllByMentorAndStatusIn(user, LIVE_MATCH_STATUSES);
 
         return dashboardFor(user, profile, stats, ownMatch.orElse(null), mentorMatches);
@@ -102,7 +113,7 @@ public class AccountabilityService {
         UserProfile menteeProfile = ensureProfile(mentee);
         UserStats menteeStats = statsFor(mentee);
         if (!canFindMentor(menteeStats)) {
-            throw new IllegalStateException("Mentor matching unlocks after 7 days of habit data.");
+            throw new IllegalStateException("Add your first habit to start accountability matching.");
         }
 
         Optional<MentorMatch> existing = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(mentee, LIVE_MATCH_STATUSES);
@@ -118,10 +129,54 @@ public class AccountabilityService {
         MentorCandidateScore best = bestMentorFor(mentee, menteeProfile, excludedMentorIds)
                 .orElseThrow(() -> new IllegalStateException("No eligible mentors are available yet"));
 
-        existing.ifPresent(current -> {
-            endMatch(current);
-            streamService.publishToMatch(current.getId(), "match.updated", toMatch(current));
-        });
+        MentorMatch match = createMentorMatch(
+                mentee,
+                menteeProfile,
+                best,
+                existing.orElse(null),
+                existing.isPresent()
+                        ? "Manual mentor change requested after the previous lock window."
+                        : "Manual accountability match requested.",
+                true
+        );
+
+        return dashboardFor(mentee, menteeProfile, menteeStats, match, matchRepo.findAllByMentorAndStatusIn(mentee, LIVE_MATCH_STATUSES));
+    }
+
+    @Scheduled(cron = "0 15 9 * * *")
+    @Transactional
+    public void reviewMentorships() {
+        List<MentorMatch> activeMatches = matchRepo.findAllByStatus(MentorMatchStatus.ACTIVE);
+        for (MentorMatch match : activeMatches) {
+            reviewMentorship(match);
+        }
+    }
+
+    private Optional<MentorMatch> autoAssignMentor(User mentee, UserProfile menteeProfile) {
+        return bestMentorFor(mentee, menteeProfile, Set.of())
+                .map(best -> createMentorMatch(
+                        mentee,
+                        menteeProfile,
+                        best,
+                        null,
+                        "Automatic accountability match after you started tracking habits.",
+                        true
+                ));
+    }
+
+    private MentorMatch createMentorMatch(
+            User mentee,
+            UserProfile menteeProfile,
+            MentorCandidateScore best,
+            MentorMatch previousMatch,
+            String changeReason,
+            boolean sendEmails
+    ) {
+        User oldMentor = previousMatch == null ? null : previousMatch.getMentor();
+        if (previousMatch != null) {
+            endMatch(previousMatch, changeReason);
+            streamService.publishToMatch(previousMatch.getId(), "match.updated", toMatch(previousMatch));
+        }
 
         MentorMatch match = MentorMatch.builder()
                 .mentor(best.user())
@@ -130,6 +185,7 @@ public class AccountabilityService {
                 .matchScore(best.score())
                 .matchReasons(String.join(" | ", best.reasons()))
                 .createdAt(Instant.now())
+                .lastReviewedAt(Instant.now())
                 .build();
         matchRepo.save(match);
 
@@ -143,7 +199,101 @@ public class AccountabilityService {
         streamService.publishToMatch(match.getId(), "message.created", toMessage(welcomeMessage));
         streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
 
-        return dashboardFor(mentee, menteeProfile, menteeStats, match, matchRepo.findAllByMentorAndStatusIn(mentee, LIVE_MATCH_STATUSES));
+        if (sendEmails) {
+            sendMatchEmails(match, menteeProfile, oldMentor, changeReason);
+        }
+        return match;
+    }
+
+    private void reviewMentorship(MentorMatch match) {
+        User mentor = match.getMentor();
+        User mentee = match.getMentee();
+        UserStats menteeStats = statsFor(mentee);
+        boolean mentorCheckedRecently = mentorCheckedInSince(match, Instant.now().minus(MENTOR_INACTIVE_DAYS, ChronoUnit.DAYS));
+
+        if (menteeStats.weeklyConsistencyPercent() >= 82 && mentorCheckedRecently) {
+            adjustMentorRating(mentor, 2);
+            match.setLastReviewedAt(Instant.now());
+            matchRepo.save(match);
+            return;
+        }
+
+        boolean menteeNeedsMoreSupport = menteeStats.weeklyConsistencyPercent() < 58 || menteeStats.missedToday() > 0;
+        boolean mentorInactive = !mentorCheckedRecently && Instant.now().isAfter(match.getCreatedAt().plus(1, ChronoUnit.DAYS));
+        if (!mentorInactive || !menteeNeedsMoreSupport) {
+            match.setLastReviewedAt(Instant.now());
+            matchRepo.save(match);
+            return;
+        }
+
+        String reason = "The mentee needs more active accountability and the current mentor has not checked in for "
+                + MENTOR_INACTIVE_DAYS + " days.";
+        adjustMentorRating(mentor, -6);
+
+        Set<Long> excluded = new HashSet<>();
+        excluded.add(mentor.getId());
+        MentorCandidateScore replacement = bestMentorFor(mentee, ensureProfile(mentee), excluded).orElse(null);
+        if (replacement == null) {
+            match.setLastReviewedAt(Instant.now());
+            matchRepo.save(match);
+            return;
+        }
+
+        createMentorMatch(mentee, ensureProfile(mentee), replacement, match, reason, true);
+    }
+
+    private boolean mentorCheckedInSince(MentorMatch match, Instant after) {
+        return messageRepo.existsByMatchAndSenderAndCreatedAtAfter(match, match.getMentor(), after);
+    }
+
+    private void adjustMentorRating(User mentor, int delta) {
+        UserProfile profile = ensureProfile(mentor);
+        profile.setMentorRating(clamp(profile.getMentorRating() + delta, MENTOR_RATING_MIN, MENTOR_RATING_MAX));
+        profileRepo.save(profile);
+    }
+
+    private void sendMatchEmails(MentorMatch match, UserProfile menteeProfile, User oldMentor, String reason) {
+        User mentee = match.getMentee();
+        User mentor = match.getMentor();
+        UserProfile mentorProfile = ensureProfile(mentor);
+
+        if (oldMentor == null) {
+            emailService.sendMentorAssignedToMentee(
+                    mentee.getEmail(),
+                    menteeProfile.getDisplayName(),
+                    mentorProfile.getDisplayName(),
+                    reason
+            );
+            emailService.sendMenteeAssignedToMentor(
+                    mentor.getEmail(),
+                    mentorProfile.getDisplayName(),
+                    menteeProfile.getDisplayName(),
+                    reason
+            );
+            return;
+        }
+
+        UserProfile oldMentorProfile = ensureProfile(oldMentor);
+        emailService.sendMentorChangedToMentee(
+                mentee.getEmail(),
+                menteeProfile.getDisplayName(),
+                oldMentorProfile.getDisplayName(),
+                mentorProfile.getDisplayName(),
+                reason
+        );
+        emailService.sendMenteeReassignedFromMentor(
+                oldMentor.getEmail(),
+                oldMentorProfile.getDisplayName(),
+                menteeProfile.getDisplayName(),
+                reason,
+                oldMentorProfile.getMentorRating()
+        );
+        emailService.sendReassignedMenteeToNewMentor(
+                mentor.getEmail(),
+                mentorProfile.getDisplayName(),
+                menteeProfile.getDisplayName(),
+                reason
+        );
     }
 
     @Transactional
@@ -313,7 +463,6 @@ public class AccountabilityService {
                 .filter(candidate -> !excludedUserIds.contains(candidate.getId()))
                 .map(candidate -> scoreCandidate(candidate, menteeProfile))
                 .flatMap(Optional::stream)
-                .filter(score -> score.stats().mentorEligible())
                 .max(Comparator.comparingInt(MentorCandidateScore::score));
     }
 
@@ -329,11 +478,13 @@ public class AccountabilityService {
         int timezoneScore = timezoneScore(menteeProfile.getTimezone(), candidateProfile.getTimezone());
         int languageScore = menteeProfile.getLanguage().equalsIgnoreCase(candidateProfile.getLanguage()) ? 15 : 0;
         int friendScore = areFriends(menteeProfile.getUser(), candidate) ? 20 : 0;
+        int mentorRatingScore = Math.max(0, candidateProfile.getMentorRating() - MENTOR_RATING_DEFAULT);
         int loadPenalty = (int) Math.min(matchRepo.countByMentorAndStatus(candidate, MentorMatchStatus.ACTIVE) * 8, 24);
-        int score = Math.max(0, consistencyScore + goalScore + timezoneScore + languageScore + friendScore - loadPenalty);
+        int score = Math.max(0, consistencyScore + goalScore + timezoneScore + languageScore + friendScore + mentorRatingScore - loadPenalty);
 
         List<String> reasons = new ArrayList<>();
         reasons.add(stats.weeklyConsistencyPercent() + "% consistency");
+        reasons.add(candidateProfile.getMentorRating() + " mentor rating");
         if (friendScore > 0) reasons.add("already in your circle");
         if (goalScore > 0) reasons.add("similar goals");
         if (timezoneScore > 0) reasons.add("timezone fit");
@@ -500,7 +651,8 @@ public class AccountabilityService {
                 profile.getAvatarUrl(),
                 profile.getTimezone(),
                 profile.getLanguage(),
-                profile.getGoals()
+                profile.getGoals(),
+                profile.getMentorRating()
         );
     }
 
@@ -535,7 +687,8 @@ public class AccountabilityService {
                 profile.getTimezone(),
                 profile.getLanguage(),
                 profile.getGoals(),
-                stats.weeklyConsistencyPercent()
+                stats.weeklyConsistencyPercent(),
+                profile.getMentorRating()
         );
     }
 
@@ -585,10 +738,9 @@ public class AccountabilityService {
 
         String message;
         if (!canFindMentor) {
-            int daysRemaining = Math.max(0, 7 - stats.historyDays());
-            message = "Mentor matching unlocks after " + daysRemaining + " more " + (daysRemaining == 1 ? "day" : "days") + " of data.";
+            message = "Add your first habit to start automatic accountability matching.";
         } else if (!hasMentor) {
-            message = "Find a mentor when you want extra accountability.";
+            message = "We will assign a mentor automatically as soon as another user is available.";
         } else if (canChangeMentor) {
             message = "You can change mentor if this match is not helping.";
         } else {
@@ -703,7 +855,7 @@ public class AccountabilityService {
     }
 
     private boolean canFindMentor(UserStats stats) {
-        return stats.totalHabits() > 0 && stats.historyDays() >= 7;
+        return stats.totalHabits() > 0;
     }
 
     private boolean isMentorLocked(MentorMatch match) {
@@ -715,7 +867,12 @@ public class AccountabilityService {
     }
 
     private void endMatch(MentorMatch match) {
+        endMatch(match, "Mentor match ended.");
+    }
+
+    private void endMatch(MentorMatch match, String reason) {
         match.setStatus(MentorMatchStatus.ENDED);
+        match.setEndedReason(reason);
         match.setEndedAt(Instant.now());
         matchRepo.save(match);
     }
@@ -973,6 +1130,10 @@ public class AccountabilityService {
 
     private String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private User requireUser(Long userId) {

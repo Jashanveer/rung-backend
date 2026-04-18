@@ -38,5 +38,10 @@ public class MentorMatch {
     @Column(nullable = false)
     private Instant createdAt;
 
+    @Column(length = 500)
+    private String endedReason;
+
+    private Instant lastReviewedAt;
+
     private Instant endedAt;
 }

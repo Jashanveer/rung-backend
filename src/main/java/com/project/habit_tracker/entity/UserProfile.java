@@ -33,4 +33,8 @@ public class UserProfile {
 
     @Column(nullable = false)
     private String goals;
+
+    @Builder.Default
+    @Column(nullable = false, columnDefinition = "integer default 50")
+    private int mentorRating = 50;
 }

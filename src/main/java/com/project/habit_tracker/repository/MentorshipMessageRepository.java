@@ -9,10 +9,13 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 
 public interface MentorshipMessageRepository extends JpaRepository<MentorshipMessage, Long> {
     List<MentorshipMessage> findTop20ByMatchOrderByCreatedAtDesc(MentorMatch match);
+
+    boolean existsByMatchAndSenderAndCreatedAtAfter(MentorMatch match, User sender, Instant after);
 
     @Modifying
     @Transactional
