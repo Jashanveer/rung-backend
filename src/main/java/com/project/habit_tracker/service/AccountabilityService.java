@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
 @Service
 public class AccountabilityService {
     private static final int MENTOR_LOCK_DAYS = 7;
+    private static final int MENTOR_DATA_DAYS = 7;
     private static final int MENTOR_INACTIVE_DAYS = 3;
     private static final int MENTOR_RATING_DEFAULT = 50;
     private static final int MENTOR_RATING_MIN = 0;
@@ -113,7 +114,7 @@ public class AccountabilityService {
         UserProfile menteeProfile = ensureProfile(mentee);
         UserStats menteeStats = statsFor(mentee);
         if (!canFindMentor(menteeStats)) {
-            throw new IllegalStateException("Add your first habit to start accountability matching.");
+            throw new IllegalStateException(mentorMatchingWaitMessage(menteeStats));
         }
 
         Optional<MentorMatch> existing = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(mentee, LIVE_MATCH_STATUSES);
@@ -738,9 +739,9 @@ public class AccountabilityService {
 
         String message;
         if (!canFindMentor) {
-            message = "Add your first habit to start automatic accountability matching.";
+            message = mentorMatchingWaitMessage(stats);
         } else if (!hasMentor) {
-            message = "We will assign a mentor automatically as soon as another user is available.";
+            message = "We will assign a mentor automatically using your 7-day habit trend as soon as another user is available.";
         } else if (canChangeMentor) {
             message = "You can change mentor if this match is not helping.";
         } else {
@@ -855,7 +856,18 @@ public class AccountabilityService {
     }
 
     private boolean canFindMentor(UserStats stats) {
-        return stats.totalHabits() > 0;
+        return stats.totalHabits() > 0 && stats.historyDays() >= MENTOR_DATA_DAYS;
+    }
+
+    private String mentorMatchingWaitMessage(UserStats stats) {
+        if (stats.totalHabits() == 0) {
+            return "Add your first habit to start collecting accountability data.";
+        }
+
+        int daysRemaining = Math.max(0, MENTOR_DATA_DAYS - stats.historyDays());
+        return "Mentor matching starts after " + MENTOR_DATA_DAYS + " days of habit data. "
+                + daysRemaining + " more " + (daysRemaining == 1 ? "day" : "days")
+                + " needed to assign a mentor from your trend and consistency.";
     }
 
     private boolean isMentorLocked(MentorMatch match) {
