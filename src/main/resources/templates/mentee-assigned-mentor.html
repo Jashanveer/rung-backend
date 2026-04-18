@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>You have a new accountability mentee</title>
+  <style>
+    :root{--bg:#f3f4f6;--card:#ffffff;--text:#31343a;--muted:#767c85;--line:#e6e8eb;--primary:#2f95dc;--primary-soft:#eaf4fc;--green:#44b36f;--green-soft:#edf8f0;--gold:#e7b93e;--gold-soft:#fff8e7;--purple:#8d7cf2;--purple-soft:#f3efff;--shadow:0 22px 52px rgba(0,0,0,.11);--radius:30px}
+    *{box-sizing:border-box}
+    body{margin:0;padding:24px;background:linear-gradient(180deg,#f5f6f8 0%,#eef1f4 100%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--text)}
+    .shell{max-width:680px;margin:0 auto;padding:28px 18px}.brand{text-align:center;font-weight:700;font-size:28px;margin-bottom:18px;color:#40434a;letter-spacing:-0.02em}
+    .hero{background:rgba(255,255,255,.92);border:1px solid rgba(0,0,0,.06);border-radius:var(--radius);box-shadow:var(--shadow);padding:42px 34px 32px}
+    .eyebrow{display:inline-block;padding:10px 16px;border-radius:999px;background:var(--gold-soft);color:var(--gold);font-weight:700;font-size:13px;letter-spacing:.02em;margin-bottom:18px}
+    h1{margin:0 0 10px 0;font-size:34px;line-height:1.1;letter-spacing:-0.03em;text-align:center}.subtitle{margin:0 auto 28px auto;max-width:520px;text-align:center;color:var(--muted);font-size:15px;line-height:1.7}
+    .match-card{border:1px solid var(--line);border-radius:22px;padding:20px;background:#f9fafb;margin:22px 0}.label{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}.name{font-size:24px;font-weight:800;letter-spacing:-0.03em;color:#2f3136}
+    .reason{margin-top:18px;padding:18px 20px;border-radius:18px;background:var(--purple-soft);border:1px solid rgba(141,124,242,.15);font-size:14px;line-height:1.7;color:#45425c}
+    .steps{margin-top:20px;padding:18px 20px;border-radius:20px;background:#fbfbfc;border:1px solid var(--line)}.steps h2{margin:0 0 10px;font-size:17px}.steps p{margin:0;color:var(--muted);font-size:14px;line-height:1.7}
+    .cta-wrap{text-align:center;margin:26px 0 8px}.cta{display:inline-block;background:var(--primary);color:#fff !important;text-decoration:none;font-weight:700;padding:15px 26px;border-radius:18px;font-size:15px;box-shadow:0 10px 24px rgba(47,149,220,.22)}
+    .footer{margin-top:18px;text-align:center;color:#8a9098;font-size:12px;line-height:1.7;padding:0 12px}@media only screen and (max-width:600px){body{padding:12px}.shell{padding:12px 0}.hero{padding:28px 18px 24px;border-radius:22px}h1{font-size:28px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="brand">Habit Tracker</div>
+    <div class="hero">
+      <div style="text-align:center"><span class="eyebrow">Mentor assignment</span></div>
+      <h1>Hi {{FIRST_NAME}}, you have a new mentee.</h1>
+      <p class="subtitle">{{MENTEE_NAME}} has been assigned to you for accountability after their habit trend was reviewed.</p>
+      <div class="match-card">
+        <div class="label">Your mentee</div>
+        <div class="name">{{MENTEE_NAME}}</div>
+        <div class="reason"><strong>Why this match happened:</strong><br />{{REASON}}</div>
+      </div>
+      <div class="steps">
+        <h2>Send a small check-in</h2>
+        <p>Mentor rating reflects accountability check-ins and support. Your own habit consistency affects your user level separately.</p>
+      </div>
+      <div class="cta-wrap"><a href="{{APP_URL}}" class="cta">Open Habit Tracker</a></div>
+    </div>
+    <div class="footer">Sent to {{USER_EMAIL}}<br />Habit Tracker &bull; Build small wins every day</div>
+  </div>
+</body>
+</html>

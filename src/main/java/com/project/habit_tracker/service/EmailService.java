@@ -20,9 +20,9 @@ import java.util.Map;
 /**
  * Sends transactional and scheduled emails.
  *
- * Verification and welcome emails use HTML templates from
- * src/main/resources/templates/. Password reset and weekly reflection
- * use plain text.
+ * Verification, welcome, mentor accountability, and weekly report emails use
+ * HTML templates from src/main/resources/templates/. Password reset and weekly
+ * reflection use plain text.
  *
  * Gracefully skips all sending if MAIL_HOST is not configured.
  *
@@ -144,87 +144,54 @@ public class EmailService {
 
     public void sendMentorAssignedToMentee(String toEmail, String displayName, String mentorName, String reason) {
         if (!emailEnabled()) return;
-        String body = """
-                Hi %s,
-
-                You have been matched with %s for accountability.
-
-                Why this match happened:
-                %s
-
-                Your mentor can send gentle check-ins and encouragement. Keep your next step small and visible.
-
-                The Habit Tracker Team
-                """.formatted(displayName, mentorName, reason);
-        sendPlain(toEmail, "Your accountability mentor is ready", body);
+        String html = renderTemplate("templates/mentor-assigned-mentee.html", mentorshipVars(toEmail, displayName, Map.of(
+                "{{MENTOR_NAME}}", htmlEscape(mentorName),
+                "{{REASON}}", htmlEscape(reason),
+                "{{APP_URL}}", htmlEscape(appUrl)
+        )));
+        sendHtml(toEmail, "Your accountability mentor is ready", html);
     }
 
     public void sendMenteeAssignedToMentor(String toEmail, String displayName, String menteeName, String reason) {
         if (!emailEnabled()) return;
-        String body = """
-                Hi %s,
-
-                %s has been assigned to you for accountability.
-
-                Why this match happened:
-                %s
-
-                Send a short, kind check-in when they miss habits or need momentum. Mentor rating reflects your accountability check-ins, not your own habit consistency.
-
-                The Habit Tracker Team
-                """.formatted(displayName, menteeName, reason);
-        sendPlain(toEmail, "You have a new accountability mentee", body);
+        String html = renderTemplate("templates/mentee-assigned-mentor.html", mentorshipVars(toEmail, displayName, Map.of(
+                "{{MENTEE_NAME}}", htmlEscape(menteeName),
+                "{{REASON}}", htmlEscape(reason),
+                "{{APP_URL}}", htmlEscape(appUrl)
+        )));
+        sendHtml(toEmail, "You have a new accountability mentee", html);
     }
 
     public void sendMentorChangedToMentee(String toEmail, String displayName, String oldMentorName, String newMentorName, String reason) {
         if (!emailEnabled()) return;
-        String body = """
-                Hi %s,
-
-                Your accountability mentor has changed from %s to %s.
-
-                Why this changed:
-                %s
-
-                This keeps accountability active when a mentor is not checking in or when your consistency needs a better support fit.
-
-                The Habit Tracker Team
-                """.formatted(displayName, oldMentorName, newMentorName, reason);
-        sendPlain(toEmail, "Your accountability mentor changed", body);
+        String html = renderTemplate("templates/mentor-changed-mentee.html", mentorshipVars(toEmail, displayName, Map.of(
+                "{{OLD_MENTOR_NAME}}", htmlEscape(oldMentorName),
+                "{{NEW_MENTOR_NAME}}", htmlEscape(newMentorName),
+                "{{REASON}}", htmlEscape(reason),
+                "{{APP_URL}}", htmlEscape(appUrl)
+        )));
+        sendHtml(toEmail, "Your accountability mentor changed", html);
     }
 
     public void sendMenteeReassignedFromMentor(String toEmail, String displayName, String menteeName, String reason, int mentorRating) {
         if (!emailEnabled()) return;
-        String body = """
-                Hi %s,
-
-                %s has been reassigned to another mentor.
-
-                Why this changed:
-                %s
-
-                Your mentor rating is now %d. Ratings change when mentors do or do not provide accountability check-ins; your own habit consistency affects your user level separately.
-
-                The Habit Tracker Team
-                """.formatted(displayName, menteeName, reason, mentorRating);
-        sendPlain(toEmail, "A mentee was reassigned", body);
+        String html = renderTemplate("templates/mentee-reassigned-old-mentor.html", mentorshipVars(toEmail, displayName, Map.of(
+                "{{MENTEE_NAME}}", htmlEscape(menteeName),
+                "{{REASON}}", htmlEscape(reason),
+                "{{MENTOR_RATING}}", String.valueOf(mentorRating),
+                "{{APP_URL}}", htmlEscape(appUrl)
+        )));
+        sendHtml(toEmail, "A mentee was reassigned", html);
     }
 
     public void sendReassignedMenteeToNewMentor(String toEmail, String displayName, String menteeName, String reason) {
         if (!emailEnabled()) return;
-        String body = """
-                Hi %s,
-
-                %s has been reassigned to you for accountability.
-
-                Why this changed:
-                %s
-
-                Please send a gentle check-in soon so the mentee has an active accountability partner.
-
-                The Habit Tracker Team
-                """.formatted(displayName, menteeName, reason);
-        sendPlain(toEmail, "A mentee needs your accountability", body);
+        String html = renderTemplate("templates/mentee-reassigned-new-mentor.html", mentorshipVars(toEmail, displayName, Map.of(
+                "{{MENTEE_NAME}}", htmlEscape(menteeName),
+                "{{REASON}}", htmlEscape(reason),
+                "{{APP_URL}}", htmlEscape(appUrl)
+        )));
+        sendHtml(toEmail, "A mentee needs your accountability", html);
     }
 
     /** Weekly reflection email — sent every Sunday. Personalised from stats. */
@@ -251,6 +218,14 @@ public class EmailService {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to load email template: " + path, e);
         }
+    }
+
+    private Map<String, String> mentorshipVars(String toEmail, String displayName, Map<String, String> extraVars) {
+        Map<String, String> vars = new HashMap<>();
+        vars.put("{{FIRST_NAME}}", htmlEscape(displayName));
+        vars.put("{{USER_EMAIL}}", htmlEscape(toEmail));
+        vars.putAll(extraVars);
+        return vars;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
