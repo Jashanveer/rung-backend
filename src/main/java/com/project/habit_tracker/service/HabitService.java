@@ -3,7 +3,11 @@ package com.project.habit_tracker.service;
 import com.project.habit_tracker.api.dto.HabitCreateRequest;
 import com.project.habit_tracker.api.dto.HabitResponse;
 import com.project.habit_tracker.api.dto.HabitUpdateRequest;
+import com.project.habit_tracker.api.dto.TaskCreateRequest;
+import com.project.habit_tracker.api.dto.TaskResponse;
+import com.project.habit_tracker.api.dto.TaskUpdateRequest;
 import com.project.habit_tracker.entity.Habit;
+import com.project.habit_tracker.entity.HabitEntryType;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.repository.HabitCheckRepository;
@@ -42,8 +46,56 @@ public class HabitService {
     }
 
     public List<HabitResponse> listHabits(Long userId) {
+        return listByType(userId, HabitEntryType.HABIT);
+    }
+
+    public HabitResponse createHabit(Long userId, HabitCreateRequest req) {
+        return createByType(userId, req.title(), req.reminderWindow(), HabitEntryType.HABIT);
+    }
+
+    @Transactional
+    public HabitResponse updateHabit(Long userId, Long habitId, HabitUpdateRequest req) {
+        return updateByType(userId, habitId, req.title(), req.reminderWindow(), HabitEntryType.HABIT);
+    }
+
+    @Transactional
+    public void deleteHabit(Long userId, Long habitId) {
+        deleteByType(userId, habitId, HabitEntryType.HABIT);
+    }
+
+    @Transactional
+    public HabitResponse setCheck(Long userId, Long habitId, String dateKey, boolean done) {
+        return setCheckByType(userId, habitId, dateKey, done, HabitEntryType.HABIT);
+    }
+
+    public List<TaskResponse> listTasks(Long userId) {
+        return listByType(userId, HabitEntryType.TASK).stream()
+                .map(this::toTaskResponse)
+                .toList();
+    }
+
+    public TaskResponse createTask(Long userId, TaskCreateRequest req) {
+        return toTaskResponse(createByType(userId, req.title(), null, HabitEntryType.TASK));
+    }
+
+    @Transactional
+    public TaskResponse updateTask(Long userId, Long taskId, TaskUpdateRequest req) {
+        return toTaskResponse(updateByType(userId, taskId, req.title(), null, HabitEntryType.TASK));
+    }
+
+    @Transactional
+    public void deleteTask(Long userId, Long taskId) {
+        deleteByType(userId, taskId, HabitEntryType.TASK);
+    }
+
+    @Transactional
+    public TaskResponse setTaskCheck(Long userId, Long taskId, String dateKey, boolean done) {
+        return toTaskResponse(setCheckByType(userId, taskId, dateKey, done, HabitEntryType.TASK));
+    }
+
+    private List<HabitResponse> listByType(Long userId, HabitEntryType type) {
         User user = requireUser(userId);
-        List<Habit> habits = habitRepo.findAllByUser(user);
+        List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, type);
 
         List<HabitCheck> checks = habits.isEmpty() ? List.of() : checkRepo.findAllByHabitIn(habits);
 
@@ -62,25 +114,26 @@ public class HabitService {
         return out;
     }
 
-    public HabitResponse createHabit(Long userId, HabitCreateRequest req) {
+    private HabitResponse createByType(Long userId, String title, String reminderWindow, HabitEntryType type) {
         User user = requireUser(userId);
         Habit habit = Habit.builder()
                 .user(user)
-                .title(req.title())
-                .reminderWindow(req.reminderWindow())
+                .title(title)
+                .reminderWindow(type == HabitEntryType.HABIT ? reminderWindow : null)
+                .entryType(type)
                 .build();
         habitRepo.save(habit);
         return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), Map.of());
     }
 
     @Transactional
-    public HabitResponse updateHabit(Long userId, Long habitId, HabitUpdateRequest req) {
+    private HabitResponse updateByType(Long userId, Long entryId, String title, String reminderWindow, HabitEntryType type) {
         User user = requireUser(userId);
-        Habit habit = habitRepo.findByIdAndUser(habitId, user)
-                .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
+        Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
+                .orElseThrow(() -> new IllegalArgumentException(entityLabel(type) + " not found"));
 
-        habit.setTitle(req.title());
-        habit.setReminderWindow(req.reminderWindow());
+        habit.setTitle(title);
+        habit.setReminderWindow(type == HabitEntryType.HABIT ? reminderWindow : null);
         habitRepo.save(habit);
 
         return new HabitResponse(
@@ -92,20 +145,20 @@ public class HabitService {
     }
 
     @Transactional
-    public void deleteHabit(Long userId, Long habitId) {
+    private void deleteByType(Long userId, Long entryId, HabitEntryType type) {
         User user = requireUser(userId);
-        Habit habit = habitRepo.findByIdAndUser(habitId, user)
-                .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
+        Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
+                .orElseThrow(() -> new IllegalArgumentException(entityLabel(type) + " not found"));
         rewardGrantRepo.deleteByHabit(habit);
         checkRepo.deleteAllByHabit(habit);
         habitRepo.delete(habit);
     }
 
     @Transactional
-    public HabitResponse setCheck(Long userId, Long habitId, String dateKey, boolean done) {
+    private HabitResponse setCheckByType(Long userId, Long entryId, String dateKey, boolean done, HabitEntryType type) {
         User user = requireUser(userId);
-        Habit habit = habitRepo.findByIdAndUser(habitId, user)
-                .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
+        Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
+                .orElseThrow(() -> new IllegalArgumentException(entityLabel(type) + " not found"));
 
         // 1. Rate-limit guard — throws HTTP 429 if exceeded
         rewardService.checkRateLimit(userId);
@@ -131,6 +184,18 @@ public class HabitService {
 
         // Return the full check map for this habit so callers always have the real state
         return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), checksFor(habit));
+    }
+
+    private TaskResponse toTaskResponse(HabitResponse habitResponse) {
+        return new TaskResponse(
+                habitResponse.id(),
+                habitResponse.title(),
+                habitResponse.checksByDate()
+        );
+    }
+
+    private String entityLabel(HabitEntryType type) {
+        return type == HabitEntryType.HABIT ? "Habit" : "Task";
     }
 
     private Map<String, Boolean> checksFor(Habit habit) {

@@ -1,6 +1,7 @@
 package com.project.habit_tracker.service;
 
 import com.project.habit_tracker.entity.Habit;
+import com.project.habit_tracker.entity.HabitEntryType;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.repository.HabitCheckRepository;
@@ -65,7 +66,7 @@ public class WeeklyReflectionScheduler {
         Map<Long, Integer> userConsistency = new HashMap<>();
         for (User u : users) {
             try {
-                List<Habit> habits = habitRepo.findAllByUser(u);
+                List<Habit> habits = habitRepo.findAllByUserAndEntryType(u, HabitEntryType.HABIT);
                 if (habits.isEmpty()) { userConsistency.put(u.getId(), 0); continue; }
                 List<HabitCheck> checks = habitCheckRepo.findAllByHabitIn(habits);
                 userConsistency.put(u.getId(), computeConsistency(habits, checks, dayKeys));
@@ -79,7 +80,7 @@ public class WeeklyReflectionScheduler {
 
         for (User user : users) {
             try {
-                List<Habit> habits = habitRepo.findAllByUser(user);
+                List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, HabitEntryType.HABIT);
                 if (habits.isEmpty()) continue;
 
                 List<HabitCheck> checks = habitCheckRepo.findAllByHabitIn(habits);

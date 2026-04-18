@@ -24,4 +24,9 @@ public class Habit {
 
     @Column(name = "reminder_window", length = 24)
     private String reminderWindow;
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "entry_type", nullable = false, length = 16)
+    private HabitEntryType entryType = HabitEntryType.HABIT;
 }

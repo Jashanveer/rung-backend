@@ -10,4 +10,6 @@ public interface StreakFreezeRepository extends JpaRepository<StreakFreeze, Long
     List<StreakFreeze> findAllByUser(User user);
 
     long countByUserAndUsedAtIsNull(User user);
+
+    void deleteAllByUser(User user);
 }

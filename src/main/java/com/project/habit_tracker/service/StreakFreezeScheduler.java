@@ -1,6 +1,7 @@
 package com.project.habit_tracker.service;
 
 import com.project.habit_tracker.entity.Habit;
+import com.project.habit_tracker.entity.HabitEntryType;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.repository.HabitCheckRepository;
@@ -57,7 +58,7 @@ public class StreakFreezeScheduler {
     }
 
     private boolean hadPerfectWeek(User user) {
-        List<Habit> habits = habitRepo.findAllByUser(user);
+        List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, HabitEntryType.HABIT);
         if (habits.isEmpty()) return false;
 
         List<HabitCheck> checks = checkRepo.findAllByHabitIn(habits);

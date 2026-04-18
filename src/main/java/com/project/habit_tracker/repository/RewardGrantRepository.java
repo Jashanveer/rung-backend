@@ -13,6 +13,7 @@ import java.util.Optional;
 public interface RewardGrantRepository extends JpaRepository<RewardGrant, Long> {
 
     List<RewardGrant> findAllByUser(User user);
+    void deleteAllByUser(User user);
 
     Optional<RewardGrant> findByUserAndHabitAndDateKey(User user, Habit habit, String dateKey);
 

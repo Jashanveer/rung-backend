@@ -368,7 +368,7 @@ public class AccountabilityService {
     }
 
     private UserStats statsFor(User user) {
-        List<Habit> habits = habitRepo.findAllByUser(user);
+        List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, HabitEntryType.HABIT);
         List<HabitCheck> checks = habits.isEmpty() ? List.of() : checkRepo.findAllByHabitIn(habits);
         Set<String> doneKeys = checks.stream()
                 .filter(HabitCheck::isDone)
@@ -854,7 +854,7 @@ public class AccountabilityService {
     }
 
     private List<AccountabilityDashboardResponse.HabitTimeCluster> habitClustersFor(User user) {
-        List<Habit> habits = habitRepo.findAllByUser(user);
+        List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, HabitEntryType.HABIT);
         if (habits.isEmpty()) return List.of();
 
         UserProfile profile = ensureProfile(user);

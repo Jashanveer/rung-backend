@@ -2,6 +2,7 @@ package com.project.habit_tracker.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.*;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
@@ -52,6 +53,11 @@ public class GlobalExceptionHandler {
         return error(status, HttpStatus.resolve(status) != null
                 ? HttpStatus.resolve(status).getReasonPhrase() : "Error",
                 ex.getReason(), req);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException ex, HttpServletRequest req) {
+        return error(409, "Conflict", "Unable to complete the request — related data still references this record.", req);
     }
 
     @ExceptionHandler(Exception.class)

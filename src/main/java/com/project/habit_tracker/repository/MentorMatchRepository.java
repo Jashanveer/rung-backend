@@ -4,6 +4,10 @@ import com.project.habit_tracker.entity.MentorMatch;
 import com.project.habit_tracker.entity.MentorMatchStatus;
 import com.project.habit_tracker.entity.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.List;
@@ -19,4 +23,9 @@ public interface MentorMatchRepository extends JpaRepository<MentorMatch, Long> 
     long countByMentorAndStatus(User mentor, MentorMatchStatus status);
 
     List<MentorMatch> findAllByStatusIn(Collection<MentorMatchStatus> statuses);
+
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM MentorMatch m WHERE m.mentor = :user OR m.mentee = :user")
+    void deleteAllByMentorOrMentee(@Param("user") User user);
 }
