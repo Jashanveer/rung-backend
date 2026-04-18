@@ -2,6 +2,7 @@ package com.project.habit_tracker.service;
 
 import com.project.habit_tracker.api.dto.HabitCreateRequest;
 import com.project.habit_tracker.api.dto.HabitResponse;
+import com.project.habit_tracker.api.dto.HabitUpdateRequest;
 import com.project.habit_tracker.entity.Habit;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
@@ -55,7 +56,7 @@ public class HabitService {
 
         List<HabitResponse> out = new ArrayList<>();
         for (Habit h : habits) {
-            out.add(new HabitResponse(h.getId(), h.getTitle(),
+            out.add(new HabitResponse(h.getId(), h.getTitle(), h.getReminderWindow(),
                     checksByHabitId.getOrDefault(h.getId(), Map.of())));
         }
         return out;
@@ -63,9 +64,31 @@ public class HabitService {
 
     public HabitResponse createHabit(Long userId, HabitCreateRequest req) {
         User user = requireUser(userId);
-        Habit habit = Habit.builder().user(user).title(req.title()).build();
+        Habit habit = Habit.builder()
+                .user(user)
+                .title(req.title())
+                .reminderWindow(req.reminderWindow())
+                .build();
         habitRepo.save(habit);
-        return new HabitResponse(habit.getId(), habit.getTitle(), Map.of());
+        return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), Map.of());
+    }
+
+    @Transactional
+    public HabitResponse updateHabit(Long userId, Long habitId, HabitUpdateRequest req) {
+        User user = requireUser(userId);
+        Habit habit = habitRepo.findByIdAndUser(habitId, user)
+                .orElseThrow(() -> new IllegalArgumentException("Habit not found"));
+
+        habit.setTitle(req.title());
+        habit.setReminderWindow(req.reminderWindow());
+        habitRepo.save(habit);
+
+        return new HabitResponse(
+                habit.getId(),
+                habit.getTitle(),
+                habit.getReminderWindow(),
+                checksFor(habit)
+        );
     }
 
     @Transactional
@@ -107,11 +130,15 @@ public class HabitService {
         }
 
         // Return the full check map for this habit so callers always have the real state
+        return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), checksFor(habit));
+    }
+
+    private Map<String, Boolean> checksFor(Habit habit) {
         List<HabitCheck> allChecks = checkRepo.findAllByHabitIn(List.of(habit));
         Map<String, Boolean> map = new HashMap<>();
         for (HabitCheck c : allChecks) {
             if (c.isDone()) map.put(c.getDateKey(), true);
         }
-        return new HabitResponse(habit.getId(), habit.getTitle(), map);
+        return map;
     }
 }

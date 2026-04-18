@@ -5,6 +5,7 @@ import java.util.Map;
 public record HabitResponse(
         Long id,
         String title,
+        String reminderWindow,
         Map<String, Boolean> checksByDate
 ) {
 }

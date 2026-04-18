@@ -21,4 +21,7 @@ public class Habit {
 
     @Column(nullable = false)
     private String title;
+
+    @Column(name = "reminder_window", length = 24)
+    private String reminderWindow;
 }

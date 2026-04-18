@@ -3,6 +3,7 @@ package com.project.habit_tracker.api;
 import com.project.habit_tracker.api.dto.CheckUpdateRequest;
 import com.project.habit_tracker.api.dto.HabitCreateRequest;
 import com.project.habit_tracker.api.dto.HabitResponse;
+import com.project.habit_tracker.api.dto.HabitUpdateRequest;
 import com.project.habit_tracker.security.JwtAuthFilter;
 import com.project.habit_tracker.service.HabitService;
 import jakarta.validation.Valid;
@@ -37,6 +38,13 @@ public class HabitController {
     @PostMapping
     public ResponseEntity<HabitResponse> create(Authentication auth, @Valid @RequestBody HabitCreateRequest req) {
         return ResponseEntity.ok(habitService.createHabit(userId(auth), req));
+    }
+
+    @PutMapping("/{habitId}")
+    public ResponseEntity<HabitResponse> update(Authentication auth,
+                                                @PathVariable Long habitId,
+                                                @Valid @RequestBody HabitUpdateRequest req) {
+        return ResponseEntity.ok(habitService.updateHabit(userId(auth), habitId, req));
     }
 
     @DeleteMapping("/{habitId}")
