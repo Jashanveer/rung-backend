@@ -34,6 +34,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/habits/**").authenticated()
                         .requestMatchers("/api/accountability/**").authenticated()
                         .requestMatchers("/api/devices/**").authenticated()
+                        .requestMatchers("/api/users/**").authenticated()
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)

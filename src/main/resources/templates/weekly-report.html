@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Your Weekly Habit Report</title>
+  <style>
+    :root{
+      --bg:#f3f4f6;
+      --card:#ffffff;
+      --text:#31343a;
+      --muted:#767c85;
+      --line:#e6e8eb;
+      --primary:#2f95dc;
+      --primary-soft:#eaf4fc;
+      --green:#44b36f;
+      --green-soft:#edf8f0;
+      --gold:#e7b93e;
+      --gold-soft:#fff8e7;
+      --purple:#8d7cf2;
+      --purple-soft:#f3efff;
+      --shadow:0 22px 52px rgba(0,0,0,.11);
+      --radius:30px;
+    }
+
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      padding:24px;
+      background:linear-gradient(180deg,#f5f6f8 0%,#eef1f4 100%);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      color:var(--text);
+    }
+
+    .shell{max-width:680px;margin:0 auto;padding:28px 18px}
+
+    .brand{
+      text-align:center;
+      font-weight:700;
+      font-size:28px;
+      margin-bottom:18px;
+      color:#40434a;
+      letter-spacing:-0.02em;
+    }
+
+    .hero{
+      background:rgba(255,255,255,.92);
+      border:1px solid rgba(0,0,0,.06);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      padding:42px 34px 32px;
+    }
+
+    .eyebrow{
+      display:inline-block;
+      padding:10px 16px;
+      border-radius:999px;
+      background:var(--primary-soft);
+      color:var(--primary);
+      font-weight:700;
+      font-size:13px;
+      letter-spacing:.02em;
+      margin-bottom:18px;
+    }
+
+    h1{
+      margin:0 0 8px 0;
+      font-size:34px;
+      line-height:1.1;
+      letter-spacing:-0.03em;
+      text-align:center;
+    }
+
+    .subtitle{
+      margin:0 auto 24px auto;
+      max-width:520px;
+      text-align:center;
+      color:var(--muted);
+      font-size:15px;
+      line-height:1.65;
+    }
+
+    /* Big stat strip */
+    .stats-row{
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:10px;
+      margin:0 0 28px;
+    }
+    .stat-box{
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:14px 10px;
+      text-align:center;
+      background:#f9fafb;
+    }
+    .stat-box .num{
+      display:block;
+      font-size:24px;
+      font-weight:800;
+      letter-spacing:-0.03em;
+      margin-bottom:3px;
+    }
+    .stat-box .lbl{
+      font-size:11px;
+      color:var(--muted);
+      font-weight:600;
+      text-transform:uppercase;
+      letter-spacing:.04em;
+    }
+    .stat-box.green .num{color:var(--green)}
+    .stat-box.gold  .num{color:var(--gold)}
+    .stat-box.blue  .num{color:var(--primary)}
+    .stat-box.purple.num{color:var(--purple)}
+
+    /* Section header */
+    .section-head{
+      font-size:11px;
+      font-weight:700;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      color:var(--muted);
+      margin:26px 0 14px;
+    }
+
+    /* Bar chart */
+    .chart-wrap{
+      background:#f9fafb;
+      border:1px solid var(--line);
+      border-radius:20px;
+      padding:20px 18px 12px;
+    }
+    .bars{
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-around;
+      height:90px;
+      gap:6px;
+    }
+    .bar-col{
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:5px;
+    }
+    .bar-pct{
+      font-size:10px;
+      font-weight:700;
+      color:var(--muted);
+    }
+    .bar{
+      width:100%;
+      max-width:40px;
+      border-radius:6px 6px 3px 3px;
+      background:linear-gradient(180deg,var(--green) 0%,#2daf64 100%);
+      min-height:4px;
+      transition:height .3s ease;
+    }
+    .bar.dim{background:linear-gradient(180deg,#d0d4da 0%,#c4c8cf 100%)}
+    .bar-day{
+      font-size:11px;
+      font-weight:600;
+      color:var(--muted);
+      letter-spacing:.02em;
+    }
+
+    /* Percentile pill */
+    .percentile-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding:10px 18px;
+      border-radius:999px;
+      background:var(--green-soft);
+      border:1px solid rgba(68,179,111,.18);
+      font-size:13px;
+      font-weight:600;
+      color:#276e45;
+      margin:16px 0 0;
+    }
+    .percentile-pill .rank-num{
+      font-size:22px;
+      font-weight:800;
+      letter-spacing:-0.03em;
+      color:var(--green);
+    }
+
+    /* AI insight card */
+    .insight-card{
+      margin-top:22px;
+      padding:20px 22px;
+      border-radius:20px;
+      background:linear-gradient(135deg,var(--primary-soft) 0%,var(--purple-soft) 100%);
+      border:1px solid rgba(141,124,242,.14);
+    }
+    .insight-header{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      margin-bottom:10px;
+    }
+    .insight-header span{
+      font-size:12px;
+      font-weight:700;
+      letter-spacing:.06em;
+      text-transform:uppercase;
+      color:var(--purple);
+    }
+    .insight-card p{
+      margin:0;
+      font-size:14px;
+      line-height:1.7;
+      color:#3d4047;
+    }
+
+    /* Habit breakdown */
+    .habit-row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:11px 0;
+      border-bottom:1px solid var(--line);
+    }
+    .habit-row:last-child{border-bottom:none}
+    .habit-name{font-size:14px;font-weight:600}
+    .habit-meta{display:flex;align-items:center;gap:12px}
+    .habit-rate{
+      font-size:13px;
+      font-weight:700;
+      color:var(--green);
+    }
+    .habit-rate.low{color:#e07b37}
+    .habit-rate.zero{color:#e05252}
+    .mini-dots{display:flex;gap:4px}
+    .dot{width:8px;height:8px;border-radius:50%;background:#e0e3e8}
+    .dot.done{background:var(--green)}
+
+    .footer{
+      margin-top:18px;
+      text-align:center;
+      color:#8a9098;
+      font-size:12px;
+      line-height:1.7;
+      padding:0 12px;
+    }
+
+    @media only screen and (max-width:600px){
+      body{padding:12px}
+      .shell{padding:12px 0}
+      .hero{padding:28px 18px 24px;border-radius:22px}
+      h1{font-size:27px}
+      .stats-row{grid-template-columns:repeat(2,1fr)}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="brand">Habit Tracker</div>
+
+    <div class="hero">
+      <div style="text-align:center">
+        <span class="eyebrow">📅 Weekly report — {{WEEK_RANGE}}</span>
+      </div>
+
+      <h1>{{CONSISTENCY_EMOJI}} Hey {{FIRST_NAME}}, here's your week.</h1>
+      <p class="subtitle">
+        {{CONSISTENCY_LINE}}
+      </p>
+
+      <div class="stats-row">
+        <div class="stat-box green">
+          <span class="num">{{CONSISTENCY_PCT}}%</span>
+          <span class="lbl">Consistency</span>
+        </div>
+        <div class="stat-box gold">
+          <span class="num">{{PERFECT_DAYS}}</span>
+          <span class="lbl">Perfect days</span>
+        </div>
+        <div class="stat-box blue">
+          <span class="num">{{BEST_STREAK}}d</span>
+          <span class="lbl">Best streak</span>
+        </div>
+        <div class="stat-box" style="border-color:var(--purple-soft)">
+          <span class="num" style="color:var(--purple)">{{TOTAL_HABITS}}</span>
+          <span class="lbl">Habits</span>
+        </div>
+      </div>
+
+      <!-- 7-day bar chart -->
+      <p class="section-head">📊 Daily completion this week</p>
+      <div class="chart-wrap">
+        <div class="bars">
+          {{DAY_BARS}}
+        </div>
+      </div>
+
+      <!-- Percentile comparison -->
+      <div style="text-align:center">
+        <div class="percentile-pill">
+          <span>You're in the top</span>
+          <span class="rank-num">{{PERCENTILE}}%</span>
+          <span>of users this week 🏆</span>
+        </div>
+      </div>
+
+      <!-- AI personalised insight -->
+      <div class="insight-card">
+        <div class="insight-header">
+          <span>✨</span>
+          <span>Personalised insight</span>
+        </div>
+        <p>{{AI_INSIGHT}}</p>
+      </div>
+
+      <!-- Per-habit breakdown -->
+      <p class="section-head">📋 Habit breakdown</p>
+      {{HABIT_ROWS}}
+
+    </div>
+
+    <div class="footer">
+      This report covers {{WEEK_RANGE}}. Sent to {{USER_EMAIL}}.<br />
+      Habit Tracker &bull; Small wins, every day
+    </div>
+  </div>
+</body>
+</html>

@@ -11,4 +11,6 @@ public interface HabitRepository extends JpaRepository<Habit, Long> {
     List<Habit> findAllByUser(User user);
 
     Optional<Habit> findByIdAndUser(Long id, User user);
+
+    void deleteAllByUser(User user);
 }

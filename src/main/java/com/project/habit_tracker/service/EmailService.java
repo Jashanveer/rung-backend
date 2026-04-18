@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -102,6 +103,43 @@ public class EmailService {
                 The Habit Tracker Team
                 """.formatted(displayName, resetLink);
         sendPlain(toEmail, "Reset your Habit Tracker password", body);
+    }
+
+    /** Weekly HTML report — sent every Sunday. */
+    public void sendWeeklyReport(String toEmail, String displayName, WeeklyReflectionData data) {
+        if (!emailEnabled()) return;
+        Map<String, String> vars = new HashMap<>();
+        vars.put("{{FIRST_NAME}}",        displayName);
+        vars.put("{{WEEK_RANGE}}",        data.weekRange());
+        vars.put("{{CONSISTENCY_PCT}}",   String.valueOf(data.weeklyConsistencyPercent()));
+        vars.put("{{PERFECT_DAYS}}",      String.valueOf(data.perfectDaysThisWeek()));
+        vars.put("{{BEST_STREAK}}",       String.valueOf(data.bestStreak()));
+        vars.put("{{TOTAL_HABITS}}",      String.valueOf(data.totalHabits()));
+        vars.put("{{PERCENTILE}}",        String.valueOf(data.percentileRank()));
+        vars.put("{{AI_INSIGHT}}",        data.aiInsight() != null && !data.aiInsight().isBlank()
+                ? htmlEscape(data.aiInsight()) : buildFallbackInsight(data));
+        vars.put("{{CONSISTENCY_EMOJI}}", consistencyEmoji(data.weeklyConsistencyPercent()));
+        vars.put("{{CONSISTENCY_LINE}}",  consistencyLine(data.weeklyConsistencyPercent()));
+        vars.put("{{DAY_BARS}}",          buildDayBars(data.dailyLabels(), data.dailyCompletionRates()));
+        vars.put("{{HABIT_ROWS}}",        buildHabitRows(data.habitBreakdown()));
+        vars.put("{{USER_EMAIL}}",        toEmail);
+        String html = renderTemplate("templates/weekly-report.html", vars);
+        sendHtml(toEmail, consistencyEmoji(data.weeklyConsistencyPercent())
+                + " Your habit week in review — " + data.weekRange(), html);
+    }
+
+    /** Account-deleted farewell email. */
+    public void sendAccountDeleted(String toEmail, String displayName,
+                                   int totalHabits, int bestStreak, int totalDaysTracked) {
+        if (!emailEnabled()) return;
+        String html = renderTemplate("templates/account-deleted.html", Map.of(
+                "{{FIRST_NAME}}",         displayName,
+                "{{TOTAL_HABITS}}",       String.valueOf(totalHabits),
+                "{{BEST_STREAK}}",        String.valueOf(bestStreak),
+                "{{TOTAL_DAYS_TRACKED}}", String.valueOf(totalDaysTracked),
+                "{{USER_EMAIL}}",         toEmail
+        ));
+        sendHtml(toEmail, "Goodbye from Habit Tracker — and some parting wisdom", html);
     }
 
     /** Weekly reflection email — sent every Sunday. Personalised from stats. */
@@ -225,7 +263,73 @@ public class EmailService {
         return sb.toString();
     }
 
-    // ── Data carrier ─────────────────────────────────────────────────────────
+    // ── HTML helpers ──────────────────────────────────────────────────────────
+
+    private String buildDayBars(List<String> labels, List<Integer> rates) {
+        if (labels == null || rates == null || labels.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < labels.size(); i++) {
+            int pct = i < rates.size() ? rates.get(i) : 0;
+            int heightPx = Math.max(4, pct * 90 / 100);
+            boolean dim = pct == 0;
+            sb.append("<div class=\"bar-col\">")
+              .append("<span class=\"bar-pct\">").append(pct > 0 ? pct + "%" : "").append("</span>")
+              .append("<div class=\"bar").append(dim ? " dim" : "").append("\" style=\"height:").append(heightPx).append("px\"></div>")
+              .append("<span class=\"bar-day\">").append(htmlEscape(labels.get(i))).append("</span>")
+              .append("</div>");
+        }
+        return sb.toString();
+    }
+
+    private String buildHabitRows(List<HabitWeekStat> breakdown) {
+        if (breakdown == null || breakdown.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (HabitWeekStat stat : breakdown) {
+            String rateClass = stat.completionRate() >= 70 ? "" : stat.completionRate() >= 30 ? " low" : " zero";
+            sb.append("<div class=\"habit-row\">")
+              .append("<span class=\"habit-name\">").append(htmlEscape(stat.habitName())).append("</span>")
+              .append("<div class=\"habit-meta\">")
+              .append("<span class=\"habit-rate").append(rateClass).append("\">").append(stat.completionRate()).append("%</span>")
+              .append("<div class=\"mini-dots\">");
+            for (boolean done : stat.dailyDone()) {
+                sb.append("<div class=\"dot").append(done ? " done" : "").append("\"></div>");
+            }
+            sb.append("</div></div></div>");
+        }
+        return sb.toString();
+    }
+
+    private String consistencyEmoji(int pct) {
+        if (pct >= 90) return "🔥";
+        if (pct >= 70) return "💪";
+        if (pct >= 40) return "🌱";
+        return "💤";
+    }
+
+    private String consistencyLine(int pct) {
+        if (pct >= 90) return "Exceptional week. You're in the top tier — consistency like this compounds fast.";
+        if (pct >= 70) return "Solid week. You showed up more often than most. Keep the momentum.";
+        if (pct >= 40) return "A mixed week — and that's okay. The habit of coming back matters more than perfection.";
+        return "A quieter week. Sometimes life gets in the way. The important thing is you're still here.";
+    }
+
+    private String buildFallbackInsight(WeeklyReflectionData data) {
+        if (data.weeklyConsistencyPercent() >= 90)
+            return "You're building the kind of consistency that changes lives — " + data.weeklyConsistencyPercent()
+                    + "% this week puts you among the most dedicated users on the platform. "
+                    + "The compounding effect of this kind of discipline is real and it's showing.";
+        if (data.weeklyConsistencyPercent() >= 60)
+            return "At " + data.weeklyConsistencyPercent() + "% consistency you're solidly above average. "
+                    + "The gap between where you are and excellence is mostly just showing up on the hard days.";
+        return "Every week that you check in — even imperfectly — is a vote for the person you're becoming. "
+                + "Small actions, stacked consistently, are what long-term change is made of.";
+    }
+
+    private String htmlEscape(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
+    // ── Data carriers ─────────────────────────────────────────────────────────
 
     public record WeeklyReflectionData(
             int weeklyConsistencyPercent,
@@ -234,6 +338,22 @@ public class EmailService {
             int perfectDaysThisWeek,
             String level,
             List<String> badges,
-            String mentorTip
-    ) {}
+            String mentorTip,
+            // Extended fields for HTML report
+            String weekRange,
+            List<String> dailyLabels,
+            List<Integer> dailyCompletionRates,
+            List<HabitWeekStat> habitBreakdown,
+            int percentileRank,
+            String aiInsight
+    ) {
+        /** Backwards-compatible constructor for existing callers (no HTML fields). */
+        public WeeklyReflectionData(int weeklyConsistencyPercent, int totalHabits, int bestStreak,
+                                    int perfectDaysThisWeek, String level, List<String> badges, String mentorTip) {
+            this(weeklyConsistencyPercent, totalHabits, bestStreak, perfectDaysThisWeek, level, badges, mentorTip,
+                    "", List.of(), List.of(), List.of(), 50, "");
+        }
+    }
+
+    public record HabitWeekStat(String habitName, int completionRate, List<Boolean> dailyDone) {}
 }
