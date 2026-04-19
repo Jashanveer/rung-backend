@@ -395,10 +395,10 @@ public class AccountabilityService {
         User requester = requireUser(userId);
         User addressee = requireUser(friendUserId);
         if (requester.getId().equals(addressee.getId())) {
-            throw new IllegalArgumentException("You cannot add yourself as a friend");
+            throw new IllegalArgumentException("You cannot follow yourself");
         }
 
-        Optional<FriendConnection> existing = friendRepo.findBetween(requester, addressee);
+        Optional<FriendConnection> existing = friendRepo.findByRequesterAndAddressee(requester, addressee);
         if (existing.isEmpty()) {
             Instant now = Instant.now();
             friendRepo.save(FriendConnection.builder()
@@ -408,7 +408,7 @@ public class AccountabilityService {
                     .createdAt(now)
                     .updatedAt(now)
                     .build());
-        } else if (existing.get().getStatus() == FriendConnectionStatus.PENDING) {
+        } else {
             FriendConnection connection = existing.get();
             connection.setStatus(FriendConnectionStatus.ACCEPTED);
             connection.setUpdatedAt(Instant.now());
@@ -416,6 +416,30 @@ public class AccountabilityService {
         }
 
         return dashboard(userId);
+    }
+
+    public List<AccountabilityDashboardResponse.FriendSummary> searchFriends(Long userId, String query) {
+        User user = requireUser(userId);
+        String normalizedQuery = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (normalizedQuery.isBlank()) {
+            return suggestedFriends(user).stream()
+                    .map(candidate -> toFriendSummary(candidate.user()))
+                    .limit(10)
+                    .toList();
+        }
+
+        Set<Long> followingIds = followingIds(user);
+        return userRepo.findAll().stream()
+                .filter(candidate -> !candidate.getId().equals(user.getId()))
+                .filter(candidate -> !followingIds.contains(candidate.getId()))
+                .filter(candidate -> matchesSearch(candidate, normalizedQuery))
+                .map(this::toFriendSummary)
+                .sorted(Comparator
+                        .comparingInt(AccountabilityDashboardResponse.FriendSummary::weeklyConsistencyPercent)
+                        .reversed()
+                        .thenComparing(AccountabilityDashboardResponse.FriendSummary::displayName, String.CASE_INSENSITIVE_ORDER))
+                .limit(20)
+                .toList();
     }
 
     private AccountabilityDashboardResponse dashboardFor(
@@ -478,7 +502,7 @@ public class AccountabilityService {
         int goalScore = (int) Math.round(goalOverlap(menteeProfile.getGoals(), candidateProfile.getGoals()) * 25);
         int timezoneScore = timezoneScore(menteeProfile.getTimezone(), candidateProfile.getTimezone());
         int languageScore = menteeProfile.getLanguage().equalsIgnoreCase(candidateProfile.getLanguage()) ? 15 : 0;
-        int friendScore = areFriends(menteeProfile.getUser(), candidate) ? 20 : 0;
+        int friendScore = isFollowing(menteeProfile.getUser(), candidate) ? 20 : 0;
         int mentorRatingScore = Math.max(0, candidateProfile.getMentorRating() - MENTOR_RATING_DEFAULT);
         int loadPenalty = (int) Math.min(matchRepo.countByMentorAndStatus(candidate, MentorMatchStatus.ACTIVE) * 8, 24);
         int score = Math.max(0, consistencyScore + goalScore + timezoneScore + languageScore + friendScore + mentorRatingScore - loadPenalty);
@@ -759,10 +783,10 @@ public class AccountabilityService {
     }
 
     private AccountabilityDashboardResponse.SocialDashboard socialDashboardFor(User user) {
-        List<User> friends = acceptedFriends(user);
+        List<User> following = followingUsers(user);
         return new AccountabilityDashboardResponse.SocialDashboard(
-                friends.size(),
-                friends.stream()
+                following.size(),
+                following.stream()
                         .map(this::toSocialActivity)
                         .limit(10)
                         .toList(),
@@ -811,23 +835,35 @@ public class AccountabilityService {
         );
     }
 
-    private List<User> acceptedFriends(User user) {
-        return friendRepo.findAllByUserAndStatus(user, FriendConnectionStatus.ACCEPTED).stream()
-                .map(connection -> otherUser(connection, user))
+    private List<User> followingUsers(User user) {
+        return friendRepo.findAllByRequesterAndStatus(user, FriendConnectionStatus.ACCEPTED).stream()
+                .map(FriendConnection::getAddressee)
                 .toList();
     }
 
     private List<FriendCandidate> suggestedFriends(User user) {
         UserProfile profile = ensureProfile(user);
-        Set<Long> connectedUserIds = connectedUserIds(user);
+        Set<Long> followingIds = followingIds(user);
+        Map<Long, Integer> secondDegreeScores = secondDegreeFollowScores(user, followingIds);
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(user.getId()))
-                .filter(candidate -> !connectedUserIds.contains(candidate.getId()))
+                .filter(candidate -> !followingIds.contains(candidate.getId()))
                 .map(candidate -> {
                     UserProfile candidateProfile = ensureProfile(candidate);
                     UserStats stats = statsFor(candidate);
                     int goalScore = (int) Math.round(goalOverlap(profile.getGoals(), candidateProfile.getGoals()) * 30);
-                    int score = stats.weeklyConsistencyPercent() + goalScore;
+                    int timezoneScore = timezoneScore(profile.getTimezone(), candidateProfile.getTimezone());
+                    int languageScore = profile.getLanguage().equalsIgnoreCase(candidateProfile.getLanguage()) ? 8 : 0;
+                    int progressScore = progressPercent(stats) / 4;
+                    int mentorRatingScore = Math.max(0, candidateProfile.getMentorRating() - MENTOR_RATING_DEFAULT) / 2;
+                    int secondDegreeScore = Math.min(secondDegreeScores.getOrDefault(candidate.getId(), 0) * 18, 54);
+                    int score = stats.weeklyConsistencyPercent()
+                            + goalScore
+                            + timezoneScore
+                            + languageScore
+                            + progressScore
+                            + mentorRatingScore
+                            + secondDegreeScore;
                     return new FriendCandidate(candidate, score);
                 })
                 .sorted(Comparator.comparingInt(FriendCandidate::score).reversed())
@@ -835,19 +871,24 @@ public class AccountabilityService {
                 .toList();
     }
 
-    private Set<Long> connectedUserIds(User user) {
-        return friendRepo.findAllByUserAndStatusIn(
-                        user,
-                        List.of(FriendConnectionStatus.PENDING, FriendConnectionStatus.ACCEPTED)
-                ).stream()
-                .map(connection -> otherUser(connection, user).getId())
+    private Set<Long> followingIds(User user) {
+        return friendRepo.findAllByRequesterAndStatus(user, FriendConnectionStatus.ACCEPTED).stream()
+                .map(connection -> connection.getAddressee().getId())
                 .collect(Collectors.toSet());
     }
 
-    private User otherUser(FriendConnection connection, User user) {
-        return connection.getRequester().getId().equals(user.getId())
-                ? connection.getAddressee()
-                : connection.getRequester();
+    private Map<Long, Integer> secondDegreeFollowScores(User user, Set<Long> followingIds) {
+        Map<Long, Integer> scores = new HashMap<>();
+        List<User> following = followingUsers(user);
+        for (User followedUser : following) {
+            for (FriendConnection connection : friendRepo.findAllByRequesterAndStatus(followedUser, FriendConnectionStatus.ACCEPTED)) {
+                Long candidateId = connection.getAddressee().getId();
+                if (!candidateId.equals(user.getId()) && !followingIds.contains(candidateId)) {
+                    scores.merge(candidateId, 1, Integer::sum);
+                }
+            }
+        }
+        return scores;
     }
 
     private int progressPercent(UserStats stats) {
@@ -889,10 +930,22 @@ public class AccountabilityService {
         matchRepo.save(match);
     }
 
-    private boolean areFriends(User left, User right) {
-        return friendRepo.findBetween(left, right)
+    private boolean isFollowing(User follower, User followed) {
+        return friendRepo.findByRequesterAndAddressee(follower, followed)
                 .map(connection -> connection.getStatus() == FriendConnectionStatus.ACCEPTED)
                 .orElse(false);
+    }
+
+    private boolean matchesSearch(User candidate, String query) {
+        UserProfile profile = ensureProfile(candidate);
+        return containsIgnoreCase(candidate.getUsername(), query)
+                || containsIgnoreCase(candidate.getEmail(), query)
+                || containsIgnoreCase(profile.getDisplayName(), query)
+                || containsIgnoreCase(profile.getGoals(), query);
+    }
+
+    private boolean containsIgnoreCase(String value, String query) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(query);
     }
 
     private AccountabilityDashboardResponse.WeeklyChallenge weeklyChallengeFor(User user, UserStats stats) {

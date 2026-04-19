@@ -95,6 +95,30 @@ public class AccountabilityController {
         return ResponseEntity.ok(accountabilityService.requestFriend(userId(auth), friendUserId));
     }
 
+    @PostMapping("/follows/{followedUserId}")
+    public ResponseEntity<AccountabilityDashboardResponse> followUser(
+            Authentication auth,
+            @PathVariable Long followedUserId
+    ) {
+        return ResponseEntity.ok(accountabilityService.requestFriend(userId(auth), followedUserId));
+    }
+
+    @GetMapping("/friends/search")
+    public ResponseEntity<List<AccountabilityDashboardResponse.FriendSummary>> searchFriends(
+            Authentication auth,
+            @RequestParam(name = "q", defaultValue = "") String query
+    ) {
+        return ResponseEntity.ok(accountabilityService.searchFriends(userId(auth), query));
+    }
+
+    @GetMapping("/follows/search")
+    public ResponseEntity<List<AccountabilityDashboardResponse.FriendSummary>> searchFollows(
+            Authentication auth,
+            @RequestParam(name = "q", defaultValue = "") String query
+    ) {
+        return ResponseEntity.ok(accountabilityService.searchFriends(userId(auth), query));
+    }
+
     @PostMapping("/streak-freeze/use")
     public ResponseEntity<AccountabilityDashboardResponse> useStreakFreeze(
             Authentication auth,

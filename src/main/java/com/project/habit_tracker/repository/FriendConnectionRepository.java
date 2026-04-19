@@ -31,6 +31,12 @@ public interface FriendConnectionRepository extends JpaRepository<FriendConnecti
             @Param("status") FriendConnectionStatus status
     );
 
+    Optional<FriendConnection> findByRequesterAndAddressee(User requester, User addressee);
+
+    List<FriendConnection> findAllByRequesterAndStatus(User requester, FriendConnectionStatus status);
+
+    List<FriendConnection> findAllByAddresseeAndStatus(User addressee, FriendConnectionStatus status);
+
     @Query("""
             select fc from FriendConnection fc
             where (fc.requester = :left and fc.addressee = :right)
