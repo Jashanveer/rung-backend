@@ -38,6 +38,10 @@ public class MentorMatch {
     @Column(nullable = false)
     private Instant createdAt;
 
+    @Builder.Default
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    private boolean aiMentor = false;
+
     @Column(length = 500)
     private String endedReason;
 

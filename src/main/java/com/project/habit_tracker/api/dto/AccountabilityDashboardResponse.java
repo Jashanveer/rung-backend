@@ -46,7 +46,8 @@ public record AccountabilityDashboardResponse(
             UserSummary mentor,
             UserSummary mentee,
             int matchScore,
-            List<String> reasons
+            List<String> reasons,
+            boolean aiMentor
     ) {
     }
 

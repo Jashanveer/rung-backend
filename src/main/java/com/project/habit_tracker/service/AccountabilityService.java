@@ -28,6 +28,11 @@ public class AccountabilityService {
     private static final int MENTOR_RATING_DEFAULT = 50;
     private static final int MENTOR_RATING_MIN = 0;
     private static final int MENTOR_RATING_MAX = 100;
+    private static final int AI_REPLY_MAX_CHARS = 500;
+    private static final int AI_HISTORY_TURNS = 10;
+    static final String AI_MENTOR_EMAIL = "ai-mentor@forma.app";
+    static final String AI_MENTOR_FALLBACK_WELCOME =
+            "Hi — I'm Forma's AI mentor while we look for a human match. Tell me one habit you want to land today and I'll help you protect it.";
     private static final List<MentorMatchStatus> LIVE_MATCH_STATUSES = List.of(
             MentorMatchStatus.PENDING,
             MentorMatchStatus.ACTIVE
@@ -47,6 +52,7 @@ public class AccountabilityService {
     private final RewardService rewardService;
     private final StreakFreezeService streakFreezeService;
     private final EmailService emailService;
+    private final AIService aiService;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -62,7 +68,8 @@ public class AccountabilityService {
             ApnsService apnsService,
             RewardService rewardService,
             StreakFreezeService streakFreezeService,
-            EmailService emailService
+            EmailService emailService,
+            AIService aiService
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -78,6 +85,7 @@ public class AccountabilityService {
         this.rewardService = rewardService;
         this.streakFreezeService = streakFreezeService;
         this.emailService = emailService;
+        this.aiService = aiService;
     }
 
     @Transactional
@@ -153,16 +161,75 @@ public class AccountabilityService {
         }
     }
 
+    /**
+     * Hourly AI-mentor check-in pass. For every active AI match where the AI
+     * mentor has not posted in the last 18 hours, generate one short check-in
+     * tailored to the mentee's current stats and post it as the AI mentor.
+     */
+    @Scheduled(cron = "0 0 * * * *")
+    @Transactional
+    public void aiMentorCheckIns() {
+        if (!aiService.isConfigured()) return;
+        Instant cutoff = Instant.now().minus(18, ChronoUnit.HOURS);
+        List<MentorMatch> active = matchRepo.findAllByStatus(MentorMatchStatus.ACTIVE);
+        for (MentorMatch match : active) {
+            if (!match.isAiMentor()) continue;
+            User aiMentor = match.getMentor();
+            if (mentorCheckedInSince(match, cutoff)) continue;
+
+            String text = aiService.generateMentorCheckIn(buildMentorContext(match.getMentee(), ensureProfile(match.getMentee())));
+            if (text.isBlank()) continue;
+
+            MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
+                    .match(match)
+                    .sender(aiMentor)
+                    .message(truncateForChat(text))
+                    .nudge(true)
+                    .createdAt(Instant.now())
+                    .build());
+            streamService.publishToMatch(match.getId(), "message.created", toMessage(saved));
+            streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+        }
+    }
+
+    private void tryReplaceAiWithHuman(MentorMatch aiMatch) {
+        User mentee = aiMatch.getMentee();
+        UserProfile menteeProfile = ensureProfile(mentee);
+        Optional<MentorCandidateScore> human = bestMentorFor(mentee, menteeProfile, Set.of());
+        if (human.isEmpty()) {
+            aiMatch.setLastReviewedAt(Instant.now());
+            matchRepo.save(aiMatch);
+            return;
+        }
+        createMentorMatch(
+                mentee,
+                menteeProfile,
+                human.get(),
+                aiMatch,
+                "A human mentor is now available — handing off from your AI mentor.",
+                true
+        );
+    }
+
     private Optional<MentorMatch> autoAssignMentor(User mentee, UserProfile menteeProfile) {
-        return bestMentorFor(mentee, menteeProfile, Set.of())
-                .map(best -> createMentorMatch(
-                        mentee,
-                        menteeProfile,
-                        best,
-                        null,
-                        "Automatic accountability match after you started tracking habits.",
-                        true
-                ));
+        Optional<MentorCandidateScore> human = bestMentorFor(mentee, menteeProfile, Set.of());
+        if (human.isPresent()) {
+            return Optional.of(createMentorMatch(
+                    mentee,
+                    menteeProfile,
+                    human.get(),
+                    null,
+                    "Automatic accountability match after you started tracking habits.",
+                    true
+            ));
+        }
+        return aiMentorUser().map(ai -> createAiMentorMatch(
+                mentee,
+                menteeProfile,
+                ai,
+                null,
+                "No human mentor available yet — Forma's AI mentor will keep you accountable until one is matched."
+        ));
     }
 
     private MentorMatch createMentorMatch(
@@ -187,6 +254,7 @@ public class AccountabilityService {
                 .matchReasons(String.join(" | ", best.reasons()))
                 .createdAt(Instant.now())
                 .lastReviewedAt(Instant.now())
+                .aiMentor(false)
                 .build();
         matchRepo.save(match);
 
@@ -206,7 +274,61 @@ public class AccountabilityService {
         return match;
     }
 
+    private MentorMatch createAiMentorMatch(
+            User mentee,
+            UserProfile menteeProfile,
+            User aiMentor,
+            MentorMatch previousMatch,
+            String changeReason
+    ) {
+        if (previousMatch != null) {
+            endMatch(previousMatch, changeReason);
+            streamService.publishToMatch(previousMatch.getId(), "match.updated", toMatch(previousMatch));
+        }
+
+        List<String> reasons = List.of(
+                "AI fallback while a human match is unavailable",
+                "Personalised to your habits and weekly trend",
+                "Daily check-ins and tiny next-step suggestions"
+        );
+
+        MentorMatch match = MentorMatch.builder()
+                .mentor(aiMentor)
+                .mentee(mentee)
+                .status(MentorMatchStatus.ACTIVE)
+                .matchScore(0)
+                .matchReasons(String.join(" | ", reasons))
+                .createdAt(Instant.now())
+                .lastReviewedAt(Instant.now())
+                .aiMentor(true)
+                .build();
+        matchRepo.save(match);
+
+        String welcomeText = aiService.generateMentorWelcome(buildMentorContext(mentee, menteeProfile));
+        if (welcomeText.isBlank()) {
+            welcomeText = AI_MENTOR_FALLBACK_WELCOME;
+        }
+
+        MentorshipMessage welcomeMessage = messageRepo.save(MentorshipMessage.builder()
+                .match(match)
+                .sender(aiMentor)
+                .message(truncateForChat(welcomeText))
+                .nudge(true)
+                .createdAt(Instant.now())
+                .build());
+        streamService.publishToMatch(match.getId(), "message.created", toMessage(welcomeMessage));
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+        return match;
+    }
+
     private void reviewMentorship(MentorMatch match) {
+        if (match.isAiMentor()) {
+            // AI mentors don't get rated or reassigned; the daily AI check-in
+            // scheduler handles outreach. Try promoting the mentee onto a
+            // human mentor as soon as one becomes available.
+            tryReplaceAiWithHuman(match);
+            return;
+        }
         User mentor = match.getMentor();
         User mentee = match.getMentee();
         UserStats menteeStats = statsFor(mentee);
@@ -257,6 +379,11 @@ public class AccountabilityService {
         User mentee = match.getMentee();
         User mentor = match.getMentor();
         UserProfile mentorProfile = ensureProfile(mentor);
+        // Treat AI mentor as "no old mentor" — it has no inbox and shouldn't
+        // receive the reassignment email chain.
+        if (oldMentor != null && isAiMentor(oldMentor)) {
+            oldMentor = null;
+        }
 
         if (oldMentor == null) {
             emailService.sendMentorAssignedToMentee(
@@ -314,10 +441,11 @@ public class AccountabilityService {
     public AccountabilityDashboardResponse sendMessage(Long userId, Long matchId, MentorshipMessageRequest req, boolean nudge) {
         User sender = requireUser(userId);
         MentorMatch match = requireMatchParticipant(matchId, sender);
+        String text = req.message().trim();
         MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
                 .match(match)
                 .sender(sender)
-                .message(req.message().trim())
+                .message(text)
                 .nudge(nudge)
                 .createdAt(Instant.now())
                 .build());
@@ -325,10 +453,86 @@ public class AccountabilityService {
         streamService.publishToMatch(matchId, "match.updated", toMatch(match));
 
         if (nudge) {
-            pushNudgeToReceiver(sender, match, req.message().trim());
+            pushNudgeToReceiver(sender, match, text);
+        }
+
+        if (match.isAiMentor() && sender.getId().equals(match.getMentee().getId())) {
+            replyAsAiMentor(match, text);
         }
 
         return dashboard(userId);
+    }
+
+    private void replyAsAiMentor(MentorMatch match, String latestMenteeMessage) {
+        if (!aiService.isConfigured()) return;
+
+        User mentee = match.getMentee();
+        User aiMentor = match.getMentor();
+        UserProfile menteeProfile = ensureProfile(mentee);
+
+        List<AIService.ChatTurn> history = recentMentorHistoryAsTurns(match, aiMentor);
+
+        String reply = aiService.generateMentorReply(
+                buildMentorContext(mentee, menteeProfile),
+                history,
+                latestMenteeMessage
+        );
+        if (reply.isBlank()) return;
+
+        MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
+                .match(match)
+                .sender(aiMentor)
+                .message(truncateForChat(reply))
+                .nudge(false)
+                .createdAt(Instant.now())
+                .build());
+        streamService.publishToMatch(match.getId(), "message.created", toMessage(saved));
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+    }
+
+    /** Pulls the most recent N messages oldest-first as Anthropic-style turns. */
+    private List<AIService.ChatTurn> recentMentorHistoryAsTurns(MentorMatch match, User aiMentor) {
+        List<MentorshipMessage> recentDesc = messageRepo.findTop20ByMatchOrderByCreatedAtDesc(match);
+        int take = Math.min(recentDesc.size(), AI_HISTORY_TURNS);
+        List<MentorshipMessage> chronological = new ArrayList<>(recentDesc.subList(0, take));
+        Collections.reverse(chronological);
+        List<AIService.ChatTurn> turns = new ArrayList<>(chronological.size());
+        for (MentorshipMessage msg : chronological) {
+            String role = msg.getSender().getId().equals(aiMentor.getId()) ? "assistant" : "user";
+            turns.add(new AIService.ChatTurn(role, msg.getMessage()));
+        }
+        return turns;
+    }
+
+    private String truncateForChat(String text) {
+        String trimmed = text.strip();
+        if (trimmed.length() <= AI_REPLY_MAX_CHARS) return trimmed;
+        return trimmed.substring(0, AI_REPLY_MAX_CHARS - 1) + "…";
+    }
+
+    private Optional<User> aiMentorUser() {
+        return userRepo.findByEmail(AI_MENTOR_EMAIL);
+    }
+
+    private AIService.MentorContext buildMentorContext(User mentee, UserProfile menteeProfile) {
+        UserStats stats = statsFor(mentee);
+        List<String> habitNames = habitRepo.findAllByUserAndEntryType(mentee, HabitEntryType.HABIT).stream()
+                .map(Habit::getTitle)
+                .toList();
+        return new AIService.MentorContext(
+                menteeProfile.getDisplayName(),
+                menteeProfile.getTimezone(),
+                menteeProfile.getLanguage(),
+                menteeProfile.getGoals(),
+                stats.totalHabits(),
+                habitNames,
+                stats.weeklyConsistencyPercent(),
+                stats.recentPerfectDays(),
+                stats.bestStreak(),
+                stats.historyDays(),
+                stats.doneToday(),
+                stats.missedToday()
+        );
     }
 
     /** Fire an APNs push to every registered device of the message recipient. */
@@ -432,6 +636,7 @@ public class AccountabilityService {
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(user.getId()))
                 .filter(candidate -> !followingIds.contains(candidate.getId()))
+                .filter(candidate -> !isAiMentor(candidate))
                 .filter(candidate -> matchesSearch(candidate, normalizedQuery))
                 .map(this::toFriendSummary)
                 .sorted(Comparator
@@ -486,9 +691,14 @@ public class AccountabilityService {
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(mentee.getId()))
                 .filter(candidate -> !excludedUserIds.contains(candidate.getId()))
+                .filter(candidate -> !isAiMentor(candidate))
                 .map(candidate -> scoreCandidate(candidate, menteeProfile))
                 .flatMap(Optional::stream)
                 .max(Comparator.comparingInt(MentorCandidateScore::score));
+    }
+
+    private boolean isAiMentor(User user) {
+        return AI_MENTOR_EMAIL.equalsIgnoreCase(user.getEmail());
     }
 
     private Optional<MentorCandidateScore> scoreCandidate(User candidate, UserProfile menteeProfile) {
@@ -699,7 +909,8 @@ public class AccountabilityService {
                 toUserSummary(match.getMentor()),
                 toUserSummary(match.getMentee()),
                 match.getMatchScore(),
-                Arrays.stream(match.getMatchReasons().split("\\|")).map(String::trim).toList()
+                Arrays.stream(match.getMatchReasons().split("\\|")).map(String::trim).toList(),
+                match.isAiMentor()
         );
     }
 
@@ -848,6 +1059,7 @@ public class AccountabilityService {
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(user.getId()))
                 .filter(candidate -> !followingIds.contains(candidate.getId()))
+                .filter(candidate -> !isAiMentor(candidate))
                 .map(candidate -> {
                     UserProfile candidateProfile = ensureProfile(candidate);
                     UserStats stats = statsFor(candidate);
