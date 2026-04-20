@@ -1,5 +1,6 @@
 package com.project.habit_tracker.entity;
 
+import com.project.habit_tracker.security.EncryptedStringConverter;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -21,8 +22,13 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Convert(converter = EncryptedStringConverter.class)
     @Column(nullable = false)
     private String email;
+
+    /** HMAC-SHA256 of the normalised email — used for DB lookups when email is encrypted. */
+    @Column(name = "email_hash", length = 64)
+    private String emailHash;
 
     @Column(length = 40)
     private String username;

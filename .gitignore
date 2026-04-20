@@ -2,6 +2,12 @@ HELP.md
 src/main/resources/application-local.properties
 target/
 .DS_Store
+
+### Local secrets ###
+.env
+.env.*
+!.env.example
+!.env.*.example
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

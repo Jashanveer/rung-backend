@@ -4,6 +4,7 @@ import com.project.habit_tracker.api.dto.AuthLoginRequest;
 import com.project.habit_tracker.api.dto.AuthRefreshRequest;
 import com.project.habit_tracker.api.dto.AuthRegisterRequest;
 import com.project.habit_tracker.api.dto.AuthResponse;
+import com.project.habit_tracker.security.EncryptedStringConverter;
 import com.project.habit_tracker.entity.EmailVerificationCode;
 import com.project.habit_tracker.entity.PasswordResetToken;
 import com.project.habit_tracker.entity.RefreshToken;
@@ -46,6 +47,7 @@ public class AuthService {
     private final RefreshTokenRepository refreshTokenRepo;
     private final JwtService jwtService;
     private final EmailService emailService;
+    private final EncryptedStringConverter encConverter;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final SecureRandom random = new SecureRandom();
 
@@ -56,7 +58,8 @@ public class AuthService {
             PasswordResetTokenRepository resetTokenRepo,
             RefreshTokenRepository refreshTokenRepo,
             JwtService jwtService,
-            EmailService emailService
+            EmailService emailService,
+            EncryptedStringConverter encConverter
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -65,12 +68,13 @@ public class AuthService {
         this.refreshTokenRepo = refreshTokenRepo;
         this.jwtService = jwtService;
         this.emailService = emailService;
+        this.encConverter = encConverter;
     }
 
     @Transactional
     public void requestEmailVerification(String rawEmail) {
         String email = normalizeEmail(rawEmail);
-        if (userRepo.existsByEmail(email)) {
+        if (emailExists(email)) {
             throw new IllegalArgumentException("Email already registered");
         }
 
@@ -92,17 +96,17 @@ public class AuthService {
         String username = normalizeUsername(req.username());
         String email = normalizeEmail(req.email());
 
-        if (userRepo.existsByUsername(username)) {
-            throw new IllegalArgumentException("Username already taken");
-        }
-        if (userRepo.existsByEmail(email)) {
-            throw new IllegalArgumentException("Email already registered");
+        if (userRepo.existsByUsername(username) || emailExists(email)) {
+            // Single generic error so an attacker can't enumerate which of the two
+            // conflicts: reveals only that the combination is unavailable.
+            throw new IllegalArgumentException("That username or email can't be used. Try different credentials.");
         }
         consumeEmailVerificationCode(email, req.verificationCode());
 
         User user = User.builder()
                 .username(username)
                 .email(email)
+                .emailHash(encConverter.hash(email))
                 .passwordHash(encoder.encode(req.password()))
                 .build();
         userRepo.save(user);
@@ -125,8 +129,11 @@ public class AuthService {
 
     public AuthResponse login(AuthLoginRequest req) {
         String username = normalizeUsername(req.username());
+        String emailAttempt = req.username().trim().toLowerCase(Locale.ROOT);
+        String emailHash = encConverter.hash(emailAttempt);
         User user = userRepo.findByUsername(username)
-                .or(() -> userRepo.findByEmail(req.username().trim().toLowerCase(Locale.ROOT)))
+                .or(() -> userRepo.findByEmailHash(emailHash))
+                .or(() -> userRepo.findByEmail(emailAttempt))  // fallback for pre-encryption rows
                 .orElseThrow(() -> new IllegalArgumentException("Invalid credentials"));
 
         if (!encoder.matches(req.password(), user.getPasswordHash())) {
@@ -240,6 +247,12 @@ public class AuthService {
 
     private String normalizeEmail(String email) {
         return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean emailExists(String normalizedEmail) {
+        String hash = encConverter.hash(normalizedEmail);
+        if (userRepo.existsByEmailHash(hash)) return true;
+        return userRepo.existsByEmail(normalizedEmail);  // fallback for pre-encryption rows
     }
 
     private void consumeEmailVerificationCode(String email, String code) {

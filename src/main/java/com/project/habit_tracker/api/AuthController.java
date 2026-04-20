@@ -50,7 +50,11 @@ public class AuthController {
     }
 
     @PostMapping("/refresh")
-    public ResponseEntity<AuthResponse> refresh(@Valid @RequestBody AuthRefreshRequest req) {
+    public ResponseEntity<AuthResponse> refresh(
+            @Valid @RequestBody AuthRefreshRequest req,
+            HttpServletRequest httpReq
+    ) {
+        rateLimiter.checkRefresh(clientIp(httpReq));
         return ResponseEntity.ok(authService.refresh(req));
     }
 
@@ -76,8 +80,10 @@ public class AuthController {
      */
     @PostMapping("/reset-password")
     public ResponseEntity<AuthResponse> resetPassword(
-            @Valid @RequestBody ResetPasswordRequest req
+            @Valid @RequestBody ResetPasswordRequest req,
+            HttpServletRequest httpReq
     ) {
+        rateLimiter.checkResetPassword(clientIp(httpReq));
         return ResponseEntity.ok(authService.resetPassword(req.token(), req.newPassword()));
     }
 

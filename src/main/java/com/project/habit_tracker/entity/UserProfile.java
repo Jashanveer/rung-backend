@@ -1,5 +1,6 @@
 package com.project.habit_tracker.entity;
 
+import com.project.habit_tracker.security.EncryptedStringConverter;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -31,6 +32,7 @@ public class UserProfile {
     @Column(nullable = false, length = 16)
     private String language;
 
+    @Convert(converter = EncryptedStringConverter.class)
     @Column(nullable = false)
     private String goals;
 

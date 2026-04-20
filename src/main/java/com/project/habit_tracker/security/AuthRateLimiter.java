@@ -25,14 +25,18 @@ public class AuthRateLimiter {
     private static final int REGISTER_CAPACITY       = 5;
     private static final int EMAIL_VERIF_CAPACITY    = 5;
     private static final int FORGOT_PW_CAPACITY      = 5;
+    private static final int REFRESH_CAPACITY        = 20;  // legitimate clients refresh every ~2h; 20/min is generous
+    private static final int RESET_PW_CAPACITY       = 5;   // reset token is the entire auth factor — throttle tightly
 
     // Key = "ip:operation" -> bucket
     private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
 
-    public void checkLogin(String ip)             { check(ip + ":login",    LOGIN_CAPACITY); }
-    public void checkRegister(String ip)          { check(ip + ":register", REGISTER_CAPACITY); }
+    public void checkLogin(String ip)             { check(ip + ":login",     LOGIN_CAPACITY); }
+    public void checkRegister(String ip)          { check(ip + ":register",  REGISTER_CAPACITY); }
     public void checkEmailVerification(String ip) { check(ip + ":emailverif", EMAIL_VERIF_CAPACITY); }
-    public void checkForgotPassword(String ip)    { check(ip + ":forgotpw", FORGOT_PW_CAPACITY); }
+    public void checkForgotPassword(String ip)    { check(ip + ":forgotpw",  FORGOT_PW_CAPACITY); }
+    public void checkRefresh(String ip)           { check(ip + ":refresh",   REFRESH_CAPACITY); }
+    public void checkResetPassword(String ip)     { check(ip + ":resetpw",   RESET_PW_CAPACITY); }
 
     private void check(String key, int capacity) {
         TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(capacity));

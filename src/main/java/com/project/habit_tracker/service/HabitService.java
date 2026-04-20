@@ -126,7 +126,8 @@ public class HabitService {
         return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), Map.of());
     }
 
-    @Transactional
+    // @Transactional omitted here — Spring's AOP proxy does not intercept private calls,
+    // so it would be a no-op. Every public caller is already @Transactional.
     private HabitResponse updateByType(Long userId, Long entryId, String title, String reminderWindow, HabitEntryType type) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
@@ -144,7 +145,7 @@ public class HabitService {
         );
     }
 
-    @Transactional
+    // @Transactional omitted — see note on updateByType.
     private void deleteByType(Long userId, Long entryId, HabitEntryType type) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
@@ -154,7 +155,7 @@ public class HabitService {
         habitRepo.delete(habit);
     }
 
-    @Transactional
+    // @Transactional omitted — see note on updateByType.
     private HabitResponse setCheckByType(Long userId, Long entryId, String dateKey, boolean done, HabitEntryType type) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)

@@ -31,6 +31,7 @@ public class AccountabilityService {
     private static final int AI_REPLY_MAX_CHARS = 500;
     private static final int AI_HISTORY_TURNS = 10;
     static final String AI_MENTOR_EMAIL = "ai-mentor@forma.app";
+    static final String AI_MENTOR_USERNAME = "forma_ai_mentor";
     static final String AI_MENTOR_FALLBACK_WELCOME =
             "Hi — I'm Forma's AI mentor while we look for a human match. Tell me one habit you want to land today and I'll help you protect it.";
     private static final List<MentorMatchStatus> LIVE_MATCH_STATUSES = List.of(
@@ -698,7 +699,9 @@ public class AccountabilityService {
     }
 
     private boolean isAiMentor(User user) {
-        return AI_MENTOR_EMAIL.equalsIgnoreCase(user.getEmail());
+        if (user == null) return false;
+        if (AI_MENTOR_EMAIL.equalsIgnoreCase(user.getEmail())) return true;
+        return AI_MENTOR_USERNAME.equalsIgnoreCase(user.getUsername());
     }
 
     private Optional<MentorCandidateScore> scoreCandidate(User candidate, UserProfile menteeProfile) {

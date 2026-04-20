@@ -67,6 +67,7 @@ public class JwtService {
         Instant exp = now.plusSeconds(expirationMinutes * 60);
 
         return Jwts.builder()
+                .setId(java.util.UUID.randomUUID().toString())
                 .setIssuer(issuer)
                 .setSubject(String.valueOf(userId))
                 .claim("email", email)
