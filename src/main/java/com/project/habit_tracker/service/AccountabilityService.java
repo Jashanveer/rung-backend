@@ -636,7 +636,7 @@ public class AccountabilityService {
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(user.getId()))
                 .filter(candidate -> !followingIds.contains(candidate.getId()))
-                .filter(candidate -> !isAiMentor(candidate))
+                .filter(this::isDiscoverableSocialCandidate)
                 .filter(candidate -> matchesSearch(candidate, normalizedQuery))
                 .map(this::toFriendSummary)
                 .sorted(Comparator
@@ -1059,7 +1059,7 @@ public class AccountabilityService {
         return userRepo.findAll().stream()
                 .filter(candidate -> !candidate.getId().equals(user.getId()))
                 .filter(candidate -> !followingIds.contains(candidate.getId()))
-                .filter(candidate -> !isAiMentor(candidate))
+                .filter(this::isDiscoverableSocialCandidate)
                 .map(candidate -> {
                     UserProfile candidateProfile = ensureProfile(candidate);
                     UserStats stats = statsFor(candidate);
@@ -1081,6 +1081,15 @@ public class AccountabilityService {
                 .sorted(Comparator.comparingInt(FriendCandidate::score).reversed())
                 .limit(10)
                 .toList();
+    }
+
+    private boolean isDiscoverableSocialCandidate(User candidate) {
+        if (isAiMentor(candidate)) {
+            return false;
+        }
+
+        UserStats stats = statsFor(candidate);
+        return stats.totalHabits() > 0 || stats.totalChecks() > 0;
     }
 
     private Set<Long> followingIds(User user) {
