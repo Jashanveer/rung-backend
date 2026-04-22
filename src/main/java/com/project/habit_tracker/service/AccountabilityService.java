@@ -5,6 +5,8 @@ import com.project.habit_tracker.api.dto.MentorshipMessageRequest;
 import com.project.habit_tracker.api.dto.ProfileRequest;
 import com.project.habit_tracker.entity.*;
 import com.project.habit_tracker.repository.*;
+import com.project.habit_tracker.service.event.MenteeMessageReceivedEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -54,6 +56,7 @@ public class AccountabilityService {
     private final StreakFreezeService streakFreezeService;
     private final EmailService emailService;
     private final AIService aiService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -70,7 +73,8 @@ public class AccountabilityService {
             RewardService rewardService,
             StreakFreezeService streakFreezeService,
             EmailService emailService,
-            AIService aiService
+            AIService aiService,
+            ApplicationEventPublisher eventPublisher
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -87,6 +91,7 @@ public class AccountabilityService {
         this.streakFreezeService = streakFreezeService;
         this.emailService = emailService;
         this.aiService = aiService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -96,7 +101,10 @@ public class AccountabilityService {
         UserStats stats = statsFor(user);
 
         Optional<MentorMatch> ownMatch = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(user, LIVE_MATCH_STATUSES);
-        if (ownMatch.isEmpty() && canFindMentor(stats)) {
+        // AI mentor is unlocked immediately for every user — no 7-day wait
+        // and no human-matching pre-check. Restore the canFindMentor(stats)
+        // gate if real-person mentor matching is re-enabled.
+        if (ownMatch.isEmpty()) {
             ownMatch = autoAssignMentor(user, profile);
         }
         List<MentorMatch> mentorMatches = matchRepo.findAllByMentorAndStatusIn(user, LIVE_MATCH_STATUSES);
@@ -190,10 +198,18 @@ public class AccountabilityService {
                     .build());
             streamService.publishToMatch(match.getId(), "message.created", toMessage(saved));
             streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+            pushNudgeToReceiver(aiMentor, match, saved.getMessage());
         }
     }
 
     private void tryReplaceAiWithHuman(MentorMatch aiMatch) {
+        // AI mentor is permanent under the current product configuration.
+        // The hand-off to a human mentor is disabled so the mentor character
+        // stays AI indefinitely. Restore the commented-out body to re-enable
+        // the upgrade path when real-person mentors come back.
+        aiMatch.setLastReviewedAt(Instant.now());
+        matchRepo.save(aiMatch);
+        /*
         User mentee = aiMatch.getMentee();
         UserProfile menteeProfile = ensureProfile(mentee);
         Optional<MentorCandidateScore> human = bestMentorFor(mentee, menteeProfile, Set.of());
@@ -210,9 +226,16 @@ public class AccountabilityService {
                 "A human mentor is now available — handing off from your AI mentor.",
                 true
         );
+        */
     }
 
     private Optional<MentorMatch> autoAssignMentor(User mentee, UserProfile menteeProfile) {
+        // Human auto-matching is disabled — the AI mentor is the product
+        // default. Every new user is assigned the AI mentor on first
+        // dashboard load so the mentor character is populated immediately.
+        // To re-enable human mentor matching (e.g., if a real-person mentor
+        // ships again), uncomment the bestMentorFor block below.
+        /*
         Optional<MentorCandidateScore> human = bestMentorFor(mentee, menteeProfile, Set.of());
         if (human.isPresent()) {
             return Optional.of(createMentorMatch(
@@ -224,12 +247,13 @@ public class AccountabilityService {
                     true
             ));
         }
+        */
         return aiMentorUser().map(ai -> createAiMentorMatch(
                 mentee,
                 menteeProfile,
                 ai,
                 null,
-                "No human mentor available yet — Forma's AI mentor will keep you accountable until one is matched."
+                "Forma's AI mentor is here to keep you on track with data-driven tips."
         ));
     }
 
@@ -458,10 +482,17 @@ public class AccountabilityService {
         }
 
         if (match.isAiMentor() && sender.getId().equals(match.getMentee().getId())) {
-            replyAsAiMentor(match, text);
+            eventPublisher.publishEvent(new MenteeMessageReceivedEvent(match.getId(), text));
         }
 
         return dashboard(userId);
+    }
+
+    @Transactional
+    public void generateAndPersistAiMentorReply(Long matchId, String latestMenteeMessage) {
+        MentorMatch match = matchRepo.findById(matchId).orElse(null);
+        if (match == null) return;
+        replyAsAiMentor(match, latestMenteeMessage);
     }
 
     private void replyAsAiMentor(MentorMatch match, String latestMenteeMessage) {
@@ -489,6 +520,7 @@ public class AccountabilityService {
                 .build());
         streamService.publishToMatch(match.getId(), "message.created", toMessage(saved));
         streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+        pushNudgeToReceiver(aiMentor, match, saved.getMessage());
     }
 
     /** Pulls the most recent N messages oldest-first as Anthropic-style turns. */
@@ -532,8 +564,76 @@ public class AccountabilityService {
                 stats.bestStreak(),
                 stats.historyDays(),
                 stats.doneToday(),
-                stats.missedToday()
+                stats.missedToday(),
+                buildHabitTimingSummary(mentee)
         );
+    }
+
+    /// One-per-line habit timing description feeding the AI mentor prompt, so
+    /// suggestions can reference the user's actual hour-of-day patterns (e.g.
+    /// "Morning run — mornings (~7am, 12 samples)"). Habits with fewer than
+    /// 3 timestamped check-ins are skipped so the AI doesn't over-index on
+    /// thin data.
+    private String buildHabitTimingSummary(User mentee) {
+        List<AccountabilityDashboardResponse.HabitTimeCluster> clusters = habitClustersFor(mentee);
+        if (clusters.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (AccountabilityDashboardResponse.HabitTimeCluster c : clusters) {
+            if (c.sampleSize() < 3) continue;
+            String slot = switch (c.timeSlot()) {
+                case "MORNING"   -> "mornings";
+                case "AFTERNOON" -> "afternoons";
+                case "EVENING"   -> "evenings";
+                case "NIGHT"     -> "nights";
+                case "MIXED"     -> "varies across the day";
+                default          -> "unknown window";
+            };
+            if ("MIXED".equals(c.timeSlot())) {
+                sb.append("- ").append(c.habitTitle()).append(" — ").append(slot)
+                  .append(" (").append(c.sampleSize()).append(" samples)\n");
+            } else {
+                int hour12 = c.avgHourOfDay() % 12 == 0 ? 12 : c.avgHourOfDay() % 12;
+                String suffix = c.avgHourOfDay() < 12 ? "am" : "pm";
+                sb.append("- ").append(c.habitTitle()).append(" — ").append(slot)
+                  .append(" (~").append(hour12).append(suffix).append(", ")
+                  .append(c.sampleSize()).append(" samples)\n");
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    /**
+     * Have the AI mentor hold the mentee accountable for today's misses.
+     * Generates a short AI message, saves it as a mentor chat message,
+     * broadcasts over SSE, and pushes it to the mentee via APNs.
+     * Called by the nightly scheduler for every AI mentor match where the
+     * mentee still has missed habits. Falls back to a static line if
+     * the Anthropic key is unset or the call fails.
+     */
+    @Transactional
+    public void aiNudgeMenteeForMissedHabits(Long matchId, int missedToday) {
+        MentorMatch match = matchRepo.findById(matchId).orElse(null);
+        if (match == null || !match.isAiMentor()) return;
+        User mentee = match.getMentee();
+        User aiMentor = match.getMentor();
+        UserProfile menteeProfile = ensureProfile(mentee);
+
+        String text = aiService.generateMentorCheckIn(buildMentorContext(mentee, menteeProfile));
+        if (text.isBlank()) {
+            text = "You've missed " + missedToday + " habit" + (missedToday == 1 ? "" : "s")
+                    + " today. Pick the smallest one and finish it in the next 15 minutes.";
+        }
+
+        MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
+                .match(match)
+                .sender(aiMentor)
+                .message(truncateForChat(text))
+                .nudge(true)
+                .createdAt(Instant.now())
+                .build());
+        streamService.publishToMatch(match.getId(), "message.created", toMessage(saved));
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+        pushNudgeToReceiver(aiMentor, match, saved.getMessage());
     }
 
     /** Fire an APNs push to every registered device of the message recipient. */

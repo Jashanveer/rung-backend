@@ -1,5 +1,6 @@
 package com.project.habit_tracker.security;
 
+import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -29,6 +30,7 @@ public class SecurityConfig {
                 .cors(cors -> {}) // uses corsConfigurationSource() bean
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/api/habits/**").authenticated()
@@ -36,6 +38,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/accountability/**").authenticated()
                         .requestMatchers("/api/devices/**").authenticated()
                         .requestMatchers("/api/users/**").authenticated()
+                        .requestMatchers("/api/me").authenticated()
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)

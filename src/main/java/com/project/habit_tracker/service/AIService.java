@@ -177,10 +177,11 @@ public class AIService {
         String persona = """
                 You are Forma, a focused AI accountability mentor inside the user's habit-tracker app.
                 Voice: warm, concrete, brief. Never use filler like "Great job!", "Keep it up!", "You've got this!".
-                Always reference the mentee's actual numbers and habit names when relevant.
+                Always reference the mentee's actual numbers, habit names, and consistency when relevant.
+                Use the HABIT TIMING block to recommend concrete times: e.g. if they consistently finish their morning run around 7am, suggest keeping that slot or pairing a nearby habit to it. Do not invent timing data that isn't in the block.
                 Always end with one tiny next action they can complete in under 30 minutes.
                 Reply in 1–3 short sentences unless the mentee explicitly asks for a deep breakdown.
-                Never claim to be human. If asked, say you are Forma's AI mentor and that a human mentor will be matched when one is available.
+                Never claim to be human. If asked, say you are Forma's AI mentor.
                 """;
 
         String profile = buildMenteeContextText(ctx);
@@ -197,6 +198,9 @@ public class AIService {
 
     private String buildMenteeContextText(MentorContext ctx) {
         String habits = ctx.habitNames().isEmpty() ? "(no habits yet)" : String.join(", ", ctx.habitNames());
+        String timingBlock = ctx.habitTimingSummary() == null || ctx.habitTimingSummary().isBlank()
+                ? "(not enough timestamped check-ins yet — do not guess specific times)"
+                : ctx.habitTimingSummary();
         return """
                 MENTEE PROFILE
                 Display name: %s
@@ -212,6 +216,9 @@ public class AIService {
                 Days of history tracked: %d
                 Habits done today: %d / %d
                 Missed today: %d
+
+                HABIT TIMING (when they usually complete each habit)
+                %s
                 """.formatted(
                 ctx.displayName(),
                 ctx.timezone(),
@@ -225,7 +232,8 @@ public class AIService {
                 ctx.historyDays(),
                 ctx.doneToday(),
                 Math.max(ctx.totalHabits(), ctx.doneToday()),
-                ctx.missedToday()
+                ctx.missedToday(),
+                timingBlock
         );
     }
 
@@ -241,7 +249,11 @@ public class AIService {
                 """.formatted(name, pct, perfectDays, streak, totalHabits, habits);
     }
 
-    /** Snapshot of mentee state passed into mentor prompts. */
+    /// Snapshot of mentee state passed into mentor prompts.
+    /// `habitTimingSummary` is a pre-formatted, one-per-line description of
+    /// when the mentee typically completes each habit (e.g.
+    /// `"Morning run — mornings (~7am, 12 samples)"`), used so the AI can
+    /// recommend concrete times instead of generic encouragement.
     public record MentorContext(
             String displayName,
             String timezone,
@@ -254,7 +266,8 @@ public class AIService {
             int bestStreak,
             int historyDays,
             int doneToday,
-            int missedToday
+            int missedToday,
+            String habitTimingSummary
     ) {}
 
     /** One turn of mentor↔mentee chat. role is "user" (mentee) or "assistant" (mentor). */

@@ -14,7 +14,6 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 @Validated
 @RestController
@@ -48,9 +47,9 @@ public class HabitController {
     }
 
     @DeleteMapping("/{habitId}")
-    public ResponseEntity<Map<String, Object>> delete(Authentication auth, @PathVariable Long habitId) {
+    public ResponseEntity<Void> delete(Authentication auth, @PathVariable Long habitId) {
         habitService.deleteHabit(userId(auth), habitId);
-        return ResponseEntity.ok(Map.of());
+        return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/{habitId}/checks/{dateKey}")

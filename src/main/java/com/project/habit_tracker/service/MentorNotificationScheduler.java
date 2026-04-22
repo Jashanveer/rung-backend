@@ -52,9 +52,16 @@ public class MentorNotificationScheduler {
         log.debug("Cleared mentor notification rate-limit set for new day.");
     }
 
-    /** At 20:00 every day, notify mentors whose mentees have missed habits today. */
+    /**
+     * At 20:00 every day, surface today's missed habits.
+     *
+     *   • Human mentor matches — push the update to the mentor so they can
+     *     nudge the mentee.
+     *   • AI mentor matches — the AI mentor holds the mentee accountable
+     *     directly: an AI-generated chat message is posted to the mentor
+     *     chat and pushed to the mentee's own device.
+     */
     @Scheduled(cron = "0 0 20 * * *")
-    @Transactional(readOnly = true)
     public void notifyMentorsOfMissedHabits() {
         List<MentorMatch> activeMatches = matchRepo.findAllByStatusIn(List.of(MentorMatchStatus.ACTIVE));
         for (MentorMatch match : activeMatches) {
@@ -64,20 +71,27 @@ public class MentorNotificationScheduler {
             try {
                 User mentee = match.getMentee();
                 int missedToday = accountabilityService.missedTodayFor(mentee);
-                if (missedToday > 0) {
-                    String menteeDisplayName = profileRepo.findByUser(mentee)
-                            .map(UserProfile::getDisplayName)
-                            .orElse("Your mentee");
-                    String body = menteeDisplayName + " missed " + missedToday
-                            + " habit" + (missedToday > 1 ? "s" : "") + " today.";
-                    User mentor = match.getMentor();
-                    List<DeviceToken> tokens = deviceTokenService.tokensForUser(mentor);
-                    for (DeviceToken dt : tokens) {
-                        apnsService.sendNudge(dt.getToken(), "Habit Tracker", body);
-                    }
+                if (missedToday <= 0) continue;
+
+                if (match.isAiMentor()) {
+                    accountabilityService.aiNudgeMenteeForMissedHabits(match.getId(), missedToday);
                     notifiedToday.add(match.getId());
-                    log.debug("Notified mentor {} about mentee {} ({} missed habits)", mentor.getId(), mentee.getId(), missedToday);
+                    log.debug("AI mentor nudged mentee {} about {} missed habits", mentee.getId(), missedToday);
+                    continue;
                 }
+
+                String menteeDisplayName = profileRepo.findByUser(mentee)
+                        .map(UserProfile::getDisplayName)
+                        .orElse("Your mentee");
+                String body = menteeDisplayName + " missed " + missedToday
+                        + " habit" + (missedToday > 1 ? "s" : "") + " today.";
+                User mentor = match.getMentor();
+                List<DeviceToken> tokens = deviceTokenService.tokensForUser(mentor);
+                for (DeviceToken dt : tokens) {
+                    apnsService.sendNudge(dt.getToken(), "Habit Tracker", body);
+                }
+                notifiedToday.add(match.getId());
+                log.debug("Notified mentor {} about mentee {} ({} missed habits)", mentor.getId(), mentee.getId(), missedToday);
             } catch (Exception e) {
                 log.error("Error notifying mentor for match {}: {}", match.getId(), e.getMessage());
             }

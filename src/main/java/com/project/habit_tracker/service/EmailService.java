@@ -231,11 +231,17 @@ public class EmailService {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private boolean emailEnabled() {
-        if (mailHost == null || mailHost.isBlank()) {
-            log.debug("Email sending skipped — MAIL_HOST not configured.");
-            return false;
-        }
-        return true;
+        // Email sending is currently disabled — the accountability mentor is
+        // fully AI, so no human-in-the-loop emails (welcome, verification,
+        // mentor assignment, weekly report, etc.) need to go out. Flip this
+        // back to the mailHost check to re-enable SES/SMTP delivery when a
+        // real-person mentor ships.
+        return false;
+        // if (mailHost == null || mailHost.isBlank()) {
+        //     log.debug("Email sending skipped — MAIL_HOST not configured.");
+        //     return false;
+        // }
+        // return true;
     }
 
     // ── Senders ──────────────────────────────────────────────────────────────

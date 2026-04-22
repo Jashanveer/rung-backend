@@ -6,8 +6,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
-
 @RestController
 @RequestMapping("/api/users")
 public class UserController {
@@ -19,9 +17,9 @@ public class UserController {
     }
 
     @DeleteMapping("/me")
-    public ResponseEntity<Map<String, Object>> deleteAccount(Authentication auth) {
+    public ResponseEntity<Void> deleteAccount(Authentication auth) {
         Long userId = ((JwtAuthFilter.AuthPrincipal) auth.getPrincipal()).userId();
         userService.deleteAccount(userId);
-        return ResponseEntity.ok(Map.of());
+        return ResponseEntity.noContent().build();
     }
 }
