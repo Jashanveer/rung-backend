@@ -14,7 +14,9 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 @Validated
 @RestController
@@ -71,12 +73,14 @@ public class AccountabilityController {
     }
 
     @PostMapping("/matches/{matchId}/read")
-    public ResponseEntity<Void> markMatchRead(
+    public ResponseEntity<Map<String, Object>> markMatchRead(
             Authentication auth,
             @PathVariable Long matchId
     ) {
         accountabilityService.markMatchRead(userId(auth), matchId);
-        return ResponseEntity.ok().build();
+        // Empty JSON object instead of bare 200 so the Forma client decoder
+        // (which always tries to decode a body) doesn't fail with invalidResponse.
+        return ResponseEntity.ok(Map.of());
     }
 
     @PostMapping("/matches/{matchId}/release")
@@ -125,6 +129,26 @@ public class AccountabilityController {
             @Valid @RequestBody UseStreakFreezeRequest req
     ) {
         return ResponseEntity.ok(accountabilityService.useStreakFreeze(userId(auth), req.dateKey()));
+    }
+
+    @PostMapping("/streak-freeze/undo")
+    public ResponseEntity<AccountabilityDashboardResponse> undoStreakFreeze(Authentication auth) {
+        return ResponseEntity.ok(accountabilityService.undoStreakFreeze(userId(auth)));
+    }
+
+    /// Returns the target user's perfect-day count for the current calendar year.
+    /// Self-lookup is always allowed; otherwise the caller must follow the target.
+    @GetMapping("/users/{userId}/year-perfect-days")
+    public ResponseEntity<Map<String, Object>> yearPerfectDays(
+            Authentication auth,
+            @PathVariable("userId") Long userId
+    ) {
+        int count = accountabilityService.yearPerfectDays(userId(auth), userId);
+        return ResponseEntity.ok(Map.of(
+                "userId", userId,
+                "year", LocalDate.now().getYear(),
+                "count", count
+        ));
     }
 
     private Long userId(Authentication auth) {

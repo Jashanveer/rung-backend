@@ -5,6 +5,7 @@ import com.project.habit_tracker.api.dto.MentorshipMessageRequest;
 import com.project.habit_tracker.api.dto.ProfileRequest;
 import com.project.habit_tracker.entity.*;
 import com.project.habit_tracker.repository.*;
+import com.project.habit_tracker.service.event.AiMentorWelcomeRequestedEvent;
 import com.project.habit_tracker.service.event.MenteeMessageReceivedEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -98,7 +99,6 @@ public class AccountabilityService {
     public AccountabilityDashboardResponse dashboard(Long userId) {
         User user = requireUser(userId);
         UserProfile profile = ensureProfile(user);
-        UserStats stats = statsFor(user);
 
         Optional<MentorMatch> ownMatch = matchRepo.findFirstByMenteeAndStatusInOrderByCreatedAtDesc(user, LIVE_MATCH_STATUSES);
         // AI mentor is unlocked immediately for every user — no 7-day wait
@@ -109,7 +109,30 @@ public class AccountabilityService {
         }
         List<MentorMatch> mentorMatches = matchRepo.findAllByMentorAndStatusIn(user, LIVE_MATCH_STATUSES);
 
-        return dashboardFor(user, profile, stats, ownMatch.orElse(null), mentorMatches);
+        // SQL-filtered candidate pool — excludes the viewer and the seeded AI
+        // mentor in one round-trip instead of a full scan + in-memory filter.
+        List<User> socialCandidates = userRepo.findAllSocialCandidates(user.getId(), AI_MENTOR_USERNAME);
+        List<User> following = followingUsers(user);
+
+        // One stats batch covers every user this dashboard renders — viewer,
+        // mentor, all mentees, every follow, every social suggestion.
+        Set<Long> statIds = new HashSet<>();
+        statIds.add(user.getId());
+        mentorMatches.forEach(m -> statIds.add(m.getMentee().getId()));
+        ownMatch.ifPresent(m -> {
+            statIds.add(m.getMentor().getId());
+            statIds.add(m.getMentee().getId());
+        });
+        socialCandidates.forEach(u -> statIds.add(u.getId()));
+        following.forEach(u -> statIds.add(u.getId()));
+
+        Map<Long, UserStats> stats = bulkStatsForUserIds(statIds, user);
+        Map<Long, UserProfile> profiles = profileRepo.findAllByUserIdIn(statIds).stream()
+                .collect(Collectors.toMap(p -> p.getUser().getId(), p -> p, (a, b) -> a));
+        profiles.put(user.getId(), profile);
+
+        return dashboardFor(user, profile, stats, profiles, ownMatch.orElse(null),
+                mentorMatches, following, socialCandidates);
     }
 
     @Transactional
@@ -147,7 +170,7 @@ public class AccountabilityService {
         MentorCandidateScore best = bestMentorFor(mentee, menteeProfile, excludedMentorIds)
                 .orElseThrow(() -> new IllegalStateException("No eligible mentors are available yet"));
 
-        MentorMatch match = createMentorMatch(
+        createMentorMatch(
                 mentee,
                 menteeProfile,
                 best,
@@ -158,7 +181,11 @@ public class AccountabilityService {
                 true
         );
 
-        return dashboardFor(mentee, menteeProfile, menteeStats, match, matchRepo.findAllByMentorAndStatusIn(mentee, LIVE_MATCH_STATUSES));
+        // Re-fetch via the unified dashboard path so the response reflects all
+        // side effects (new match, ended old match, freshly-published SSE state)
+        // with bulk-loaded stats — matches the pattern used by releaseMatch /
+        // useStreakFreeze / requestFriend.
+        return dashboard(userId);
     }
 
     @Scheduled(cron = "0 15 9 * * *")
@@ -329,21 +356,52 @@ public class AccountabilityService {
                 .build();
         matchRepo.save(match);
 
-        String welcomeText = aiService.generateMentorWelcome(buildMentorContext(mentee, menteeProfile));
-        if (welcomeText.isBlank()) {
-            welcomeText = AI_MENTOR_FALLBACK_WELCOME;
-        }
-
+        // Persist the static fallback welcome up-front so the dashboard
+        // returns immediately. The personalised AI rewrite runs after
+        // commit (AiMentorWelcomeRequestedEvent → AiMentorReplyListener).
+        // This keeps the first-dashboard load off the Anthropic critical path.
         MentorshipMessage welcomeMessage = messageRepo.save(MentorshipMessage.builder()
                 .match(match)
                 .sender(aiMentor)
-                .message(truncateForChat(welcomeText))
+                .message(truncateForChat(AI_MENTOR_FALLBACK_WELCOME))
                 .nudge(true)
                 .createdAt(Instant.now())
                 .build());
         streamService.publishToMatch(match.getId(), "message.created", toMessage(welcomeMessage));
         streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+
+        if (aiService.isConfigured()) {
+            eventPublisher.publishEvent(
+                    new AiMentorWelcomeRequestedEvent(match.getId(), welcomeMessage.getId())
+            );
+        }
         return match;
+    }
+
+    /// Async upgrade for the AI mentor welcome row written by
+    /// {@link #createAiMentorMatch}. Invoked by the AFTER_COMMIT listener so
+    /// the original transaction (and the dashboard response) is not blocked
+    /// on the Anthropic round-trip. Silently exits when the API key is unset
+    /// or the message has already been replaced.
+    @Transactional
+    public void regenerateAiMentorWelcome(Long matchId, Long welcomeMessageId) {
+        if (!aiService.isConfigured()) return;
+        MentorMatch match = matchRepo.findById(matchId).orElse(null);
+        if (match == null || !match.isAiMentor()) return;
+        MentorshipMessage message = messageRepo.findById(welcomeMessageId).orElse(null);
+        if (message == null) return;
+
+        UserProfile menteeProfile = ensureProfile(match.getMentee());
+        String text = aiService.generateMentorWelcome(buildMentorContext(match.getMentee(), menteeProfile));
+        if (text.isBlank()) return;
+
+        message.setMessage(truncateForChat(text));
+        messageRepo.save(message);
+        // `match.updated` triggers a dashboard refresh on the iOS/macOS
+        // client, which surfaces the rewritten welcome text on the next
+        // payload. The client dedupes by message ID, so re-emitting
+        // `message.created` would be silently ignored.
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
     }
 
     private void reviewMentorship(MentorMatch match) {
@@ -689,6 +747,16 @@ public class AccountabilityService {
         return dashboard(userId);
     }
 
+    @Transactional
+    public AccountabilityDashboardResponse undoStreakFreeze(Long userId) {
+        User user = requireUser(userId);
+        boolean reverted = streakFreezeService.undoLastFreeze(user);
+        if (!reverted) {
+            throw new IllegalStateException("No recent freeze to undo.");
+        }
+        return dashboard(userId);
+    }
+
     private List<AccountabilityDashboardResponse.SocialPost> feed(int limit) {
         return postRepo.findAllByOrderByCreatedAtDesc(PageRequest.of(0, limit)).stream()
                 .map(this::toSocialPost)
@@ -725,21 +793,32 @@ public class AccountabilityService {
 
     public List<AccountabilityDashboardResponse.FriendSummary> searchFriends(Long userId, String query) {
         User user = requireUser(userId);
+        UserProfile profile = ensureProfile(user);
         String normalizedQuery = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+
+        // SQL filter — drops the viewer and the AI mentor without a full scan.
+        List<User> candidatePool = userRepo.findAllSocialCandidates(user.getId(), AI_MENTOR_USERNAME);
+        Set<Long> statIds = new HashSet<>();
+        statIds.add(user.getId());
+        candidatePool.forEach(c -> statIds.add(c.getId()));
+        Map<Long, UserStats> statsByUserId = bulkStatsForUserIds(statIds, user);
+        Map<Long, UserProfile> profilesByUserId = profileRepo.findAllByUserIdIn(statIds).stream()
+                .collect(Collectors.toMap(p -> p.getUser().getId(), p -> p, (a, b) -> a));
+        profilesByUserId.put(user.getId(), profile);
+
         if (normalizedQuery.isBlank()) {
-            return suggestedFriends(user).stream()
-                    .map(candidate -> toFriendSummary(candidate.user()))
+            return suggestedFriends(user, profile, statsByUserId, profilesByUserId, candidatePool).stream()
+                    .map(candidate -> toFriendSummary(candidate.user(), statsByUserId, profilesByUserId))
                     .limit(10)
                     .toList();
         }
 
         Set<Long> followingIds = followingIds(user);
-        return userRepo.findAll().stream()
-                .filter(candidate -> !candidate.getId().equals(user.getId()))
+        return candidatePool.stream()
                 .filter(candidate -> !followingIds.contains(candidate.getId()))
-                .filter(this::isDiscoverableSocialCandidate)
-                .filter(candidate -> matchesSearch(candidate, normalizedQuery))
-                .map(this::toFriendSummary)
+                .filter(candidate -> isDiscoverableSocialCandidate(candidate, statsByUserId))
+                .filter(candidate -> matchesSearch(candidate, profilesByUserId, normalizedQuery))
+                .map(candidate -> toFriendSummary(candidate, statsByUserId, profilesByUserId))
                 .sorted(Comparator
                         .comparingInt(AccountabilityDashboardResponse.FriendSummary::weeklyConsistencyPercent)
                         .reversed()
@@ -751,48 +830,55 @@ public class AccountabilityService {
     private AccountabilityDashboardResponse dashboardFor(
             User user,
             UserProfile profile,
-            UserStats stats,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId,
             MentorMatch ownMatch,
-            List<MentorMatch> mentorMatches
+            List<MentorMatch> mentorMatches,
+            List<User> following,
+            List<User> socialCandidates
     ) {
-        List<MentorshipMessage> messages = ownMatch == null ? List.of() : messageRepo.findTop20ByMatchOrderByCreatedAtDesc(ownMatch);
+        UserStats viewerStats = statsByUserId.get(user.getId());
+        List<MentorshipMessage> messages = ownMatch == null
+                ? List.of()
+                : messageRepo.findTop20ByMatchOrderByCreatedAtDesc(ownMatch);
         return new AccountabilityDashboardResponse(
                 toProfile(user, profile),
-                toLevel(stats),
-                ownMatch == null ? null : toMatch(ownMatch),
+                toLevel(viewerStats),
+                ownMatch == null ? null : toMatch(ownMatch, statsByUserId, profilesByUserId),
                 new AccountabilityDashboardResponse.MenteeDashboard(
-                        mentorTip(stats),
-                        stats.missedToday(),
-                        stats.accountabilityScore(),
+                        mentorTip(viewerStats),
+                        viewerStats.missedToday(),
+                        viewerStats.accountabilityScore(),
                         messages.stream().map(this::toMessage).toList()
                 ),
                 new AccountabilityDashboardResponse.MentorDashboard(
                         mentorMatches.size(),
-                        mentorMatches.stream().map(this::toMenteeSummary).toList()
+                        mentorMatches.stream()
+                                .map(m -> toMenteeSummary(m, statsByUserId, profilesByUserId))
+                                .toList()
                 ),
-                mentorshipStatusFor(stats, ownMatch),
+                mentorshipStatusFor(viewerStats, ownMatch),
                 new AccountabilityDashboardResponse.Rewards(
-                        stats.xp(),
-                        badgesFor(stats),
-                        stats.checksToday(),
+                        viewerStats.xp(),
+                        badgesFor(viewerStats),
+                        viewerStats.checksToday(),
                         RewardService.DAILY_GRANT_CAP,
-                        stats.rewardEligible(),
+                        viewerStats.rewardEligible(),
                         streakFreezeService.availableFreezes(user),
                         streakFreezeService.frozenDates(user)
                 ),
-                weeklyChallengeFor(user, stats),
-                socialDashboardFor(user),
+                weeklyChallengeFor(user, viewerStats),
+                socialDashboardFor(user, profile, statsByUserId, profilesByUserId, following, socialCandidates),
                 feed(20),
-                notificationsFor(stats, ownMatch, mentorMatches),
+                notificationsFor(viewerStats, ownMatch, mentorMatches),
                 habitClustersFor(user)
         );
     }
 
     private Optional<MentorCandidateScore> bestMentorFor(User mentee, UserProfile menteeProfile, Set<Long> excludedUserIds) {
-        return userRepo.findAll().stream()
-                .filter(candidate -> !candidate.getId().equals(mentee.getId()))
+        // SQL-level filter drops the mentee and AI mentor without a full scan.
+        return userRepo.findAllSocialCandidates(mentee.getId(), AI_MENTOR_USERNAME).stream()
                 .filter(candidate -> !excludedUserIds.contains(candidate.getId()))
-                .filter(candidate -> !isAiMentor(candidate))
                 .map(candidate -> scoreCandidate(candidate, menteeProfile))
                 .flatMap(Optional::stream)
                 .max(Comparator.comparingInt(MentorCandidateScore::score));
@@ -859,6 +945,20 @@ public class AccountabilityService {
     private UserStats statsFor(User user) {
         List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, HabitEntryType.HABIT);
         List<HabitCheck> checks = habits.isEmpty() ? List.of() : checkRepo.findAllByHabitIn(habits);
+        return computeStats(habits, checks, rewardsFor(user));
+    }
+
+    private RewardSnapshot rewardsFor(User user) {
+        return new RewardSnapshot(
+                rewardService.totalXp(user),
+                rewardService.checksGrantedToday(user),
+                rewardService.isRewardEligible(user)
+        );
+    }
+
+    /// Pure transformation — no DB calls. Shared by the per-user `statsFor` path
+    /// and the bulk `bulkStatsForUserIds` path so both produce identical output.
+    private UserStats computeStats(List<Habit> habits, List<HabitCheck> checks, RewardSnapshot rewards) {
         Set<String> doneKeys = checks.stream()
                 .filter(HabitCheck::isDone)
                 .map(HabitCheck::getDateKey)
@@ -882,11 +982,8 @@ public class AccountabilityService {
         boolean needsMentor = hasSevenDays && totalHabits > 0 && weeklyConsistency < 0.58;
         String level = levelName(totalChecks, weeklyConsistency, bestStreak, hasSevenDays);
         int accountabilityScore = Math.min(100, (int) Math.round(weeklyConsistency * 70 + progressToday * 30));
-        // XP comes from persisted grants — idempotent and cap-aware
-        int xp = rewardService.totalXp(user);
-        int checksToday    = rewardService.checksGrantedToday(user);
-        boolean rewardEligible = rewardService.isRewardEligible(user);
         int recentPerfectDays = recentPerfectDays(habits, checks);
+        int yearPerfectDays = yearPerfectDays(habits, checks);
 
         return new UserStats(
                 totalHabits,
@@ -899,14 +996,58 @@ public class AccountabilityService {
                 level,
                 mentorEligible,
                 needsMentor,
-                xp,
+                rewards.xp(),
                 perfectDays,
                 bestStreak,
                 recentPerfectDays,
                 historyDays,
-                checksToday,
-                rewardEligible
+                rewards.checksToday(),
+                rewards.rewardEligible(),
+                yearPerfectDays
         );
+    }
+
+    /// Single-shot bulk loader — issues exactly two queries (habits + checks) for
+    /// the entire `userIds` set, groups them in memory, and returns the full
+    /// stats map. Reward fields are populated only for `viewer`; everyone else
+    /// gets `EMPTY_REWARDS` because friends/suggestions never surface XP.
+    /// Replaces the per-user N+1 pattern that `dashboardFor` used to trigger.
+    private Map<Long, UserStats> bulkStatsForUserIds(Set<Long> userIds, User viewer) {
+        if (userIds.isEmpty()) return Map.of();
+
+        List<Habit> allHabits = habitRepo.findAllByUserIdInAndEntryType(userIds, HabitEntryType.HABIT);
+        List<HabitCheck> allChecks = allHabits.isEmpty()
+                ? List.of()
+                : checkRepo.findAllByHabitUserIdInAndEntryType(userIds, HabitEntryType.HABIT);
+
+        Map<Long, List<Habit>> habitsByUser = allHabits.stream()
+                .collect(Collectors.groupingBy(h -> h.getUser().getId()));
+        // Cache habit -> userId once so the subsequent stream doesn't initialise
+        // a Habit proxy per check (which would defeat the bulk fetch).
+        Map<Long, Long> habitToUser = allHabits.stream()
+                .collect(Collectors.toMap(Habit::getId, h -> h.getUser().getId()));
+        Map<Long, List<HabitCheck>> checksByUser = allChecks.stream()
+                .filter(hc -> habitToUser.containsKey(hc.getHabit().getId()))
+                .collect(Collectors.groupingBy(hc -> habitToUser.get(hc.getHabit().getId())));
+
+        RewardSnapshot viewerRewards = rewardsFor(viewer);
+        Long viewerId = viewer.getId();
+        Map<Long, UserStats> result = new HashMap<>(userIds.size());
+        for (Long uid : userIds) {
+            List<Habit> habits = habitsByUser.getOrDefault(uid, List.of());
+            List<HabitCheck> checks = checksByUser.getOrDefault(uid, List.of());
+            RewardSnapshot rewards = uid.equals(viewerId) ? viewerRewards : EMPTY_REWARDS;
+            result.put(uid, computeStats(habits, checks, rewards));
+        }
+        return result;
+    }
+
+    /// Cache-aware stats lookup. Falls back to a per-user DB hit only when the
+    /// bulk loader didn't cover this user (e.g. one-off helpers like
+    /// `assignMentor` that don't precompute).
+    private UserStats statsFor(User user, Map<Long, UserStats> cache) {
+        UserStats cached = cache.get(user.getId());
+        return cached != null ? cached : statsFor(user);
     }
 
     private double weeklyConsistency(List<Habit> habits, List<HabitCheck> checks) {
@@ -944,6 +1085,29 @@ public class AccountabilityService {
         return (int) perfectDays(habits, checks).stream()
                 .filter(recent::contains)
                 .count();
+    }
+
+    private int yearPerfectDays(List<Habit> habits, List<HabitCheck> checks) {
+        int currentYear = LocalDate.now().getYear();
+        return (int) perfectDays(habits, checks).stream()
+                .map(LocalDate::parse)
+                .filter(date -> date.getYear() == currentYear)
+                .count();
+    }
+
+    /// Year-to-date perfect days for any user the viewer can see.
+    /// Self-lookup is always allowed; otherwise the viewer must follow the
+    /// target (the same trust boundary the social dashboard already enforces).
+    @Transactional
+    public int yearPerfectDays(Long viewerId, Long targetUserId) {
+        User viewer = requireUser(viewerId);
+        User target = viewerId.equals(targetUserId) ? viewer : requireUser(targetUserId);
+        if (!viewerId.equals(targetUserId) && !isFollowing(viewer, target)) {
+            throw new IllegalArgumentException("You can only view perfect days for users you follow.");
+        }
+        List<Habit> habits = habitRepo.findAllByUserAndEntryType(target, HabitEntryType.HABIT);
+        List<HabitCheck> checks = habits.isEmpty() ? List.of() : checkRepo.findAllByHabitIn(habits);
+        return yearPerfectDays(habits, checks);
     }
 
     private int bestStreak(Set<String> keys) {
@@ -1006,20 +1170,32 @@ public class AccountabilityService {
     }
 
     private AccountabilityDashboardResponse.MentorMatch toMatch(MentorMatch match) {
+        return toMatch(match, Map.of(), Map.of());
+    }
+
+    private AccountabilityDashboardResponse.MentorMatch toMatch(
+            MentorMatch match,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId
+    ) {
         return new AccountabilityDashboardResponse.MentorMatch(
                 match.getId(),
                 match.getStatus().name(),
-                toUserSummary(match.getMentor()),
-                toUserSummary(match.getMentee()),
+                toUserSummary(match.getMentor(), statsByUserId, profilesByUserId),
+                toUserSummary(match.getMentee(), statsByUserId, profilesByUserId),
                 match.getMatchScore(),
                 Arrays.stream(match.getMatchReasons().split("\\|")).map(String::trim).toList(),
                 match.isAiMentor()
         );
     }
 
-    private AccountabilityDashboardResponse.UserSummary toUserSummary(User user) {
-        UserProfile profile = ensureProfile(user);
-        UserStats stats = statsFor(user);
+    private AccountabilityDashboardResponse.UserSummary toUserSummary(
+            User user,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId
+    ) {
+        UserProfile profile = profileFor(user, profilesByUserId);
+        UserStats stats = statsFor(user, statsByUserId);
         return new AccountabilityDashboardResponse.UserSummary(
                 user.getId(),
                 profile.getDisplayName(),
@@ -1031,10 +1207,14 @@ public class AccountabilityService {
         );
     }
 
-    private AccountabilityDashboardResponse.MenteeSummary toMenteeSummary(MentorMatch match) {
+    private AccountabilityDashboardResponse.MenteeSummary toMenteeSummary(
+            MentorMatch match,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId
+    ) {
         User mentee = match.getMentee();
-        UserProfile profile = ensureProfile(mentee);
-        UserStats stats = statsFor(mentee);
+        UserProfile profile = profileFor(mentee, profilesByUserId);
+        UserStats stats = statsFor(mentee, statsByUserId);
         return new AccountabilityDashboardResponse.MenteeSummary(
                 match.getId(),
                 mentee.getId(),
@@ -1043,6 +1223,11 @@ public class AccountabilityService {
                 stats.weeklyConsistencyPercent(),
                 stats.missedToday() > 0 ? "Send a gentle nudge" : "Celebrate today's progress"
         );
+    }
+
+    private UserProfile profileFor(User user, Map<Long, UserProfile> cache) {
+        UserProfile cached = cache.get(user.getId());
+        return cached != null ? cached : ensureProfile(user);
     }
 
     private AccountabilityDashboardResponse.Message toMessage(MentorshipMessage message) {
@@ -1096,24 +1281,34 @@ public class AccountabilityService {
         );
     }
 
-    private AccountabilityDashboardResponse.SocialDashboard socialDashboardFor(User user) {
-        List<User> following = followingUsers(user);
+    private AccountabilityDashboardResponse.SocialDashboard socialDashboardFor(
+            User user,
+            UserProfile viewerProfile,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId,
+            List<User> following,
+            List<User> socialCandidates
+    ) {
         return new AccountabilityDashboardResponse.SocialDashboard(
                 following.size(),
                 following.stream()
-                        .map(this::toSocialActivity)
+                        .map(friend -> toSocialActivity(friend, statsByUserId, profilesByUserId))
                         .limit(10)
                         .toList(),
-                suggestedFriends(user).stream()
-                        .map(candidate -> toFriendSummary(candidate.user()))
+                suggestedFriends(user, viewerProfile, statsByUserId, profilesByUserId, socialCandidates).stream()
+                        .map(candidate -> toFriendSummary(candidate.user(), statsByUserId, profilesByUserId))
                         .limit(5)
                         .toList()
         );
     }
 
-    private AccountabilityDashboardResponse.SocialActivity toSocialActivity(User friend) {
-        UserProfile profile = ensureProfile(friend);
-        UserStats stats = statsFor(friend);
+    private AccountabilityDashboardResponse.SocialActivity toSocialActivity(
+            User friend,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId
+    ) {
+        UserProfile profile = profileFor(friend, profilesByUserId);
+        UserStats stats = statsFor(friend, statsByUserId);
         int progressPercent = progressPercent(stats);
         String todayKey = LocalDate.now().toString();
         String kind = progressPercent >= 100 ? "PERFECT_DAY" : stats.weeklyConsistencyPercent() >= 80 ? "CONSISTENCY" : "PROGRESS";
@@ -1132,14 +1327,19 @@ public class AccountabilityService {
                 message,
                 stats.weeklyConsistencyPercent(),
                 progressPercent,
+                stats.yearPerfectDays(),
                 kind,
                 null
         );
     }
 
-    private AccountabilityDashboardResponse.FriendSummary toFriendSummary(User friend) {
-        UserProfile profile = ensureProfile(friend);
-        UserStats stats = statsFor(friend);
+    private AccountabilityDashboardResponse.FriendSummary toFriendSummary(
+            User friend,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId
+    ) {
+        UserProfile profile = profileFor(friend, profilesByUserId);
+        UserStats stats = statsFor(friend, statsByUserId);
         return new AccountabilityDashboardResponse.FriendSummary(
                 friend.getId(),
                 profile.getDisplayName(),
@@ -1155,17 +1355,21 @@ public class AccountabilityService {
                 .toList();
     }
 
-    private List<FriendCandidate> suggestedFriends(User user) {
-        UserProfile profile = ensureProfile(user);
+    private List<FriendCandidate> suggestedFriends(
+            User user,
+            UserProfile profile,
+            Map<Long, UserStats> statsByUserId,
+            Map<Long, UserProfile> profilesByUserId,
+            List<User> candidatePool
+    ) {
         Set<Long> followingIds = followingIds(user);
         Map<Long, Integer> secondDegreeScores = secondDegreeFollowScores(user, followingIds);
-        return userRepo.findAll().stream()
-                .filter(candidate -> !candidate.getId().equals(user.getId()))
+        return candidatePool.stream()
                 .filter(candidate -> !followingIds.contains(candidate.getId()))
-                .filter(this::isDiscoverableSocialCandidate)
+                .filter(candidate -> isDiscoverableSocialCandidate(candidate, statsByUserId))
                 .map(candidate -> {
-                    UserProfile candidateProfile = ensureProfile(candidate);
-                    UserStats stats = statsFor(candidate);
+                    UserProfile candidateProfile = profileFor(candidate, profilesByUserId);
+                    UserStats stats = statsFor(candidate, statsByUserId);
                     int goalScore = (int) Math.round(goalOverlap(profile.getGoals(), candidateProfile.getGoals()) * 30);
                     int timezoneScore = timezoneScore(profile.getTimezone(), candidateProfile.getTimezone());
                     int languageScore = profile.getLanguage().equalsIgnoreCase(candidateProfile.getLanguage()) ? 8 : 0;
@@ -1186,12 +1390,13 @@ public class AccountabilityService {
                 .toList();
     }
 
-    private boolean isDiscoverableSocialCandidate(User candidate) {
+    private boolean isDiscoverableSocialCandidate(User candidate, Map<Long, UserStats> statsByUserId) {
+        // SQL filter already excludes the AI mentor; defensive check kept for
+        // callers that pass arbitrary candidates.
         if (isAiMentor(candidate)) {
             return false;
         }
-
-        UserStats stats = statsFor(candidate);
+        UserStats stats = statsFor(candidate, statsByUserId);
         return stats.totalHabits() > 0 || stats.totalChecks() > 0;
     }
 
@@ -1260,10 +1465,11 @@ public class AccountabilityService {
                 .orElse(false);
     }
 
-    private boolean matchesSearch(User candidate, String query) {
-        UserProfile profile = ensureProfile(candidate);
+    private boolean matchesSearch(User candidate, Map<Long, UserProfile> profilesByUserId, String query) {
+        UserProfile profile = profileFor(candidate, profilesByUserId);
+        // Deliberately exclude email from searchable fields — exposing it
+        // would turn the search endpoint into an enumeration oracle for PII.
         return containsIgnoreCase(candidate.getUsername(), query)
-                || containsIgnoreCase(candidate.getEmail(), query)
                 || containsIgnoreCase(profile.getDisplayName(), query)
                 || containsIgnoreCase(profile.getGoals(), query);
     }
@@ -1555,9 +1761,18 @@ public class AccountabilityService {
             int recentPerfectDays,
             int historyDays,
             int checksToday,
-            boolean rewardEligible
+            boolean rewardEligible,
+            int yearPerfectDays
     ) {
     }
+
+    /// Per-user reward state (XP totals, daily-cap counters). Pulled together
+    /// only for the viewer's own dashboard — friends/suggestions don't surface
+    /// these fields, so the bulk loader passes EMPTY_REWARDS for everyone else
+    /// and skips the reward queries entirely.
+    private record RewardSnapshot(int xp, int checksToday, boolean rewardEligible) {}
+
+    private static final RewardSnapshot EMPTY_REWARDS = new RewardSnapshot(0, 0, true);
 
     private record MentorCandidateScore(
             User user,
