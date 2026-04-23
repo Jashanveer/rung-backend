@@ -13,6 +13,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 import java.util.List;
 
 @Validated
@@ -47,9 +49,11 @@ public class TaskController {
     }
 
     @DeleteMapping("/{taskId}")
-    public ResponseEntity<Void> delete(Authentication auth, @PathVariable Long taskId) {
+    public ResponseEntity<Map<String, Object>> delete(Authentication auth, @PathVariable Long taskId) {
         habitService.deleteTask(userId(auth), taskId);
-        return ResponseEntity.noContent().build();
+        // Return an empty JSON object instead of 204 so clients that always
+        // attempt to decode a JSON body succeed (Forma macOS/iOS).
+        return ResponseEntity.ok(Map.of());
     }
 
     @PutMapping("/{taskId}/checks/{dateKey}")

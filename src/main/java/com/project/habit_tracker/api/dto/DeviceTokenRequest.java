@@ -1,8 +1,10 @@
 package com.project.habit_tracker.api.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 public record DeviceTokenRequest(
-        @NotBlank String token,
-        @NotBlank String platform
+        @NotBlank @Size(max = 200) String token,
+        @NotBlank @Pattern(regexp = "^(macos|ios)$", message = "platform must be macos or ios") String platform
 ) {}

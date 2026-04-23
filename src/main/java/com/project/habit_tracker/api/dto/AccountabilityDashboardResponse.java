@@ -160,6 +160,7 @@ public record AccountabilityDashboardResponse(
             String message,
             int weeklyConsistencyPercent,
             int progressPercent,
+            int yearPerfectDays,
             String kind,
             Instant createdAt
     ) {

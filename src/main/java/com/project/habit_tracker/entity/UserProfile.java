@@ -33,10 +33,14 @@ public class UserProfile {
     private String language;
 
     @Convert(converter = EncryptedStringConverter.class)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 1024)
     private String goals;
 
     @Builder.Default
     @Column(nullable = false, columnDefinition = "integer default 50")
     private int mentorRating = 50;
+
+    @Builder.Default
+    @Column(name = "email_opt_in", nullable = false, columnDefinition = "boolean default true")
+    private boolean emailOptIn = true;
 }

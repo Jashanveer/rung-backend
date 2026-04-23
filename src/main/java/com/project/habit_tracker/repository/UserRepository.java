@@ -29,4 +29,17 @@ public interface UserRepository extends JpaRepository<User, Long> {
             order by u.id desc
             """)
     List<User> searchByIdentity(@Param("userId") Long userId, @Param("query") String query);
+
+    /// Returns every user that should be visible in social/mentor lookups —
+    /// excludes the viewer plus the seeded AI mentor account so callers
+    /// don't have to filter in memory after a full table scan.
+    @Query("""
+            select u from User u
+            where u.id <> :viewerId
+              and (u.username is null or u.username <> :aiUsername)
+            """)
+    List<User> findAllSocialCandidates(
+            @Param("viewerId") Long viewerId,
+            @Param("aiUsername") String aiUsername
+    );
 }

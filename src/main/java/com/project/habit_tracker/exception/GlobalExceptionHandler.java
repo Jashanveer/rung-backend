@@ -66,7 +66,13 @@ public class GlobalExceptionHandler {
     }
 
     private ResponseEntity<ApiError> error(int status, String error, String message, HttpServletRequest req) {
+        // Force JSON content-type so error responses can be serialised even
+        // when the original endpoint was producing text/event-stream (SSE) or
+        // another non-JSON media type. Without this override Spring tries to
+        // pick a converter for the endpoint's `produces` value and fails with
+        // HttpMessageNotWritableException for ApiError.
         return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiError(Instant.now(), status, error, message, req.getRequestURI()));
     }
 }

@@ -4,8 +4,10 @@ import com.project.habit_tracker.entity.Habit;
 import com.project.habit_tracker.entity.HabitEntryType;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
+import com.project.habit_tracker.entity.UserProfile;
 import com.project.habit_tracker.repository.HabitCheckRepository;
 import com.project.habit_tracker.repository.HabitRepository;
+import com.project.habit_tracker.repository.UserProfileRepository;
 import com.project.habit_tracker.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +32,7 @@ public class WeeklyReflectionScheduler {
     private static final DateTimeFormatter DISPLAY_FMT = DateTimeFormatter.ofPattern("MMM d");
 
     private final UserRepository userRepo;
+    private final UserProfileRepository profileRepo;
     private final HabitRepository habitRepo;
     private final HabitCheckRepository habitCheckRepo;
     private final EmailService emailService;
@@ -37,12 +40,14 @@ public class WeeklyReflectionScheduler {
 
     public WeeklyReflectionScheduler(
             UserRepository userRepo,
+            UserProfileRepository profileRepo,
             HabitRepository habitRepo,
             HabitCheckRepository habitCheckRepo,
             EmailService emailService,
             AIService aiService
     ) {
         this.userRepo = userRepo;
+        this.profileRepo = profileRepo;
         this.habitRepo = habitRepo;
         this.habitCheckRepo = habitCheckRepo;
         this.emailService = emailService;
@@ -80,6 +85,14 @@ public class WeeklyReflectionScheduler {
 
         for (User user : users) {
             try {
+                // Honour the user-controlled email opt-out from
+                // /api/users/me/preferences. Missing profiles fall through
+                // to the previous behaviour (opt-in by default).
+                boolean optedIn = profileRepo.findByUser(user)
+                        .map(UserProfile::isEmailOptIn)
+                        .orElse(true);
+                if (!optedIn) continue;
+
                 List<Habit> habits = habitRepo.findAllByUserAndEntryType(user, HabitEntryType.HABIT);
                 if (habits.isEmpty()) continue;
 

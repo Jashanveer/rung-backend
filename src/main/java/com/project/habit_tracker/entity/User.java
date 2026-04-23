@@ -23,7 +23,7 @@ public class User {
     private Long id;
 
     @Convert(converter = EncryptedStringConverter.class)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 1024)
     private String email;
 
     /** HMAC-SHA256 of the normalised email — used for DB lookups when email is encrypted. */

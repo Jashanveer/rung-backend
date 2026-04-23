@@ -194,13 +194,6 @@ public class EmailService {
         sendHtml(toEmail, "A mentee needs your accountability", html);
     }
 
-    /** Weekly reflection email — sent every Sunday. Personalised from stats. */
-    public void sendWeeklyReflection(String toEmail, String displayName, WeeklyReflectionData data) {
-        if (!emailEnabled()) return;
-        sendPlain(toEmail, "Your habit week in review — " + data.level(),
-                buildReflectionBody(displayName, data));
-    }
-
     // ── Template rendering ───────────────────────────────────────────────────
 
     private String renderTemplate(String path, Map<String, String> vars) {
@@ -231,17 +224,11 @@ public class EmailService {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private boolean emailEnabled() {
-        // Email sending is currently disabled — the accountability mentor is
-        // fully AI, so no human-in-the-loop emails (welcome, verification,
-        // mentor assignment, weekly report, etc.) need to go out. Flip this
-        // back to the mailHost check to re-enable SES/SMTP delivery when a
-        // real-person mentor ships.
-        return false;
-        // if (mailHost == null || mailHost.isBlank()) {
-        //     log.debug("Email sending skipped — MAIL_HOST not configured.");
-        //     return false;
-        // }
-        // return true;
+        if (mailHost == null || mailHost.isBlank()) {
+            log.debug("Email sending skipped — MAIL_HOST not configured.");
+            return false;
+        }
+        return true;
     }
 
     // ── Senders ──────────────────────────────────────────────────────────────
@@ -273,60 +260,6 @@ public class EmailService {
         } catch (RuntimeException e) {
             log.error("Failed to send email to {}: {}", to, e.getMessage());
         }
-    }
-
-    // ── Plain-text body builders ─────────────────────────────────────────────
-
-    private String buildReflectionBody(String displayName, WeeklyReflectionData data) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("Hi ").append(displayName).append(",\n\n");
-
-        if (data.weeklyConsistencyPercent() >= 90) {
-            sb.append("What a week. You hit ").append(data.weeklyConsistencyPercent())
-              .append("% consistency — that puts you in the top tier of habit builders. "
-                    + "The compounding effect of this kind of consistency is real.\n\n");
-        } else if (data.weeklyConsistencyPercent() >= 60) {
-            sb.append("Solid week. You finished ").append(data.weeklyConsistencyPercent())
-              .append("% of your habits — that's genuine progress. "
-                    + "The gap between 60% and 90% is mostly just showing up on the hard days.\n\n");
-        } else if (data.weeklyConsistencyPercent() > 0) {
-            sb.append("This week was a mixed bag at ").append(data.weeklyConsistencyPercent())
-              .append("% consistency, and that's okay. Every week is a fresh start. "
-                    + "The fact you're still here means you haven't given up.\n\n");
-        } else {
-            sb.append("This week was quiet on the habit front. "
-                    + "Sometimes life gets in the way — the important thing is coming back.\n\n");
-        }
-
-        if (data.perfectDaysThisWeek() >= 5) {
-            sb.append("You had ").append(data.perfectDaysThisWeek())
-              .append(" perfect days this week. That's extraordinary. "
-                    + "You're building the kind of discipline that changes lives.\n\n");
-        } else if (data.perfectDaysThisWeek() >= 1) {
-            sb.append("You had ").append(data.perfectDaysThisWeek())
-              .append(" perfect day").append(data.perfectDaysThisWeek() > 1 ? "s" : "")
-              .append(" this week. Each one is worth celebrating.\n\n");
-        }
-
-        if (data.bestStreak() >= 21) {
-            sb.append("Your best streak is ").append(data.bestStreak())
-              .append(" days — that's a deeply embedded habit. Protect it.\n\n");
-        } else if (data.bestStreak() >= 7) {
-            sb.append("Your best streak stands at ").append(data.bestStreak())
-              .append(" days. Keep going — the 21-day threshold is where habits start to feel automatic.\n\n");
-        }
-
-        if (!data.badges().isEmpty()) {
-            sb.append("Badges earned: ").append(String.join(", ", data.badges())).append(".\n\n");
-        }
-
-        if (data.mentorTip() != null && !data.mentorTip().isBlank()) {
-            sb.append("This week's focus: ").append(data.mentorTip()).append("\n\n");
-        }
-
-        sb.append("See you next week,\n");
-        sb.append("The Habit Tracker Team\n");
-        return sb.toString();
     }
 
     // ── HTML helpers ──────────────────────────────────────────────────────────

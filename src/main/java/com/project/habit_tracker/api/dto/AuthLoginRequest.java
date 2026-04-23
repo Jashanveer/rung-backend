@@ -1,9 +1,10 @@
 package com.project.habit_tracker.api.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 public record AuthLoginRequest(
-        @NotBlank String username,
-        @NotBlank String password
+        @NotBlank @Size(max = 254) String username,
+        @NotBlank @Size(max = 100) String password
 ) {
 }

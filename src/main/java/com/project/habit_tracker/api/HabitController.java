@@ -13,6 +13,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 import java.util.List;
 
 @Validated
@@ -47,9 +49,11 @@ public class HabitController {
     }
 
     @DeleteMapping("/{habitId}")
-    public ResponseEntity<Void> delete(Authentication auth, @PathVariable Long habitId) {
+    public ResponseEntity<Map<String, Object>> delete(Authentication auth, @PathVariable Long habitId) {
         habitService.deleteHabit(userId(auth), habitId);
-        return ResponseEntity.noContent().build();
+        // Return an empty JSON object instead of 204 so clients that always
+        // attempt to decode a JSON body succeed (Forma macOS/iOS).
+        return ResponseEntity.ok(Map.of());
     }
 
     @PutMapping("/{habitId}/checks/{dateKey}")

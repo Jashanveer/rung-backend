@@ -1,5 +1,6 @@
 package com.project.habit_tracker.service;
 
+import com.project.habit_tracker.service.event.AiMentorWelcomeRequestedEvent;
 import com.project.habit_tracker.service.event.MenteeMessageReceivedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,16 @@ public class AiMentorReplyListener {
             accountabilityService.generateAndPersistAiMentorReply(event.matchId(), event.menteeText());
         } catch (Exception ex) {
             log.warn("AI mentor reply failed for match {}: {}", event.matchId(), ex.getMessage());
+        }
+    }
+
+    @Async
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handleAiMentorWelcome(AiMentorWelcomeRequestedEvent event) {
+        try {
+            accountabilityService.regenerateAiMentorWelcome(event.matchId(), event.welcomeMessageId());
+        } catch (Exception ex) {
+            log.warn("AI mentor welcome upgrade failed for match {}: {}", event.matchId(), ex.getMessage());
         }
     }
 }

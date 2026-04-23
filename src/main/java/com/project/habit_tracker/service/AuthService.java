@@ -128,12 +128,13 @@ public class AuthService {
     }
 
     public AuthResponse login(AuthLoginRequest req) {
-        String username = normalizeUsername(req.username());
-        String emailAttempt = req.username().trim().toLowerCase(Locale.ROOT);
-        String emailHash = encConverter.hash(emailAttempt);
-        User user = userRepo.findByUsername(username)
+        // `normalizeUsername` and `normalizeEmail` are identical (trim +
+        // lowercase) so one normalised identifier serves both lookups.
+        String identifier = normalizeUsername(req.username());
+        String emailHash = encConverter.hash(identifier);
+        User user = userRepo.findByUsername(identifier)
                 .or(() -> userRepo.findByEmailHash(emailHash))
-                .or(() -> userRepo.findByEmail(emailAttempt))  // fallback for pre-encryption rows
+                .or(() -> userRepo.findByEmail(identifier))  // fallback for pre-encryption rows
                 .orElseThrow(() -> new IllegalArgumentException("Invalid credentials"));
 
         if (!encoder.matches(req.password(), user.getPasswordHash())) {
@@ -187,8 +188,10 @@ public class AuthService {
     @Transactional
     public void requestPasswordReset(String emailOrUsername) {
         String normalized = emailOrUsername.trim().toLowerCase(Locale.ROOT);
+        String emailHash = encConverter.hash(normalized);
         User user = userRepo.findByUsername(normalized)
-                .or(() -> userRepo.findByEmail(normalized))
+                .or(() -> userRepo.findByEmailHash(emailHash))
+                .or(() -> userRepo.findByEmail(normalized))  // fallback for pre-encryption rows
                 .orElse(null);
 
         if (user == null) {

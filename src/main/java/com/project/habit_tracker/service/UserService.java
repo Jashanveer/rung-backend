@@ -1,9 +1,11 @@
 package com.project.habit_tracker.service;
 
+import com.project.habit_tracker.api.dto.UserPreferencesResponse;
 import com.project.habit_tracker.entity.Habit;
 import com.project.habit_tracker.entity.HabitEntryType;
 import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
+import com.project.habit_tracker.entity.UserProfile;
 import com.project.habit_tracker.repository.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -112,5 +114,26 @@ public class UserService {
         emailVerificationCodeRepo.deleteByEmail(email);
         profileRepo.deleteByUser(user);
         userRepo.delete(user);
+    }
+
+    @Transactional(readOnly = true)
+    public UserPreferencesResponse getPreferences(Long userId) {
+        UserProfile profile = requireProfile(userId);
+        return new UserPreferencesResponse(profile.isEmailOptIn());
+    }
+
+    @Transactional
+    public UserPreferencesResponse updatePreferences(Long userId, boolean emailOptIn) {
+        UserProfile profile = requireProfile(userId);
+        profile.setEmailOptIn(emailOptIn);
+        profileRepo.save(profile);
+        return new UserPreferencesResponse(profile.isEmailOptIn());
+    }
+
+    private UserProfile requireProfile(Long userId) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        return profileRepo.findByUser(user)
+                .orElseThrow(() -> new IllegalArgumentException("User profile not found"));
     }
 }
