@@ -13,16 +13,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Calls the Anthropic Messages API. Hosts:
- *   • Weekly insight paragraph for the email digest.
- *   • Mentor chat replies and welcome messages for the AI fallback mentor.
+ * Anthropic (Claude) implementation of {@link MentorAI}. Kept alive as a
+ * fallback behind {@code mentor.provider=anthropic}; the default provider
+ * is Gemini (see {@link GeminiMentorAI}).
  *
- * Uses RestTemplate directly — no Anthropic SDK dependency required.
- * Mentor chat shapes the system block as a list with cache_control so the
- * per-mentee profile prefix is reused across turns inside the 5-minute TTL.
+ * Uses RestTemplate directly — no Anthropic SDK dependency. Mentor system
+ * prompts are built as a list with `cache_control` so the per-mentee
+ * profile prefix is reused across turns inside the 5-minute TTL.
  */
 @Service
-public class AIService {
+public class AIService implements MentorAI {
 
     private static final Logger log = LoggerFactory.getLogger(AIService.class);
     private static final String API_URL = "https://api.anthropic.com/v1/messages";
@@ -37,43 +37,39 @@ public class AIService {
         this.restTemplate = restTemplate;
     }
 
+    @Override
     public boolean isConfigured() {
         return apiKey != null && !apiKey.isBlank();
     }
 
-    /**
-     * Returns a 2–3 sentence personalised insight paragraph for the weekly email.
-     * Falls back to an empty string if the API key is absent or the call fails.
-     */
+    @Override
     public String generateWeeklyInsight(String displayName, int consistencyPct, int perfectDays,
-                                         int bestStreak, int totalHabits, List<String> habitNames) {
+                                         int bestStreak, int totalHabits, List<String> habitNames,
+                                         MentorPersonality personality) {
         if (!isConfigured()) {
             log.debug("Anthropic API key not set — skipping AI insight");
             return "";
         }
 
-        String prompt = buildWeeklyPrompt(displayName, consistencyPct, perfectDays, bestStreak, totalHabits, habitNames);
+        String prompt = buildWeeklyPrompt(displayName, consistencyPct, perfectDays, bestStreak, totalHabits, habitNames, personality);
 
         Map<String, Object> body = Map.of(
                 "model", MODEL,
-                "max_tokens", 200,
+                "max_tokens", 220,
                 "messages", List.of(Map.of("role", "user", "content", prompt))
         );
 
         return callForText(body, "weekly insight");
     }
 
-    /**
-     * One short opening message from the AI mentor when a match is created.
-     * Empty string if the call fails — caller should fall back to a static line.
-     */
-    public String generateMentorWelcome(MentorContext ctx) {
+    @Override
+    public String generateMentorWelcome(MentorContext ctx, MentorPersonality personality, String memory) {
         if (!isConfigured()) return "";
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", MODEL);
         body.put("max_tokens", 220);
-        body.put("system", buildMentorSystemBlocks(ctx));
+        body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", List.of(
                 Map.of("role", "user", "content",
                         "Send the very first welcome message to your new mentee. " +
@@ -84,11 +80,9 @@ public class AIService {
         return callForText(body, "mentor welcome");
     }
 
-    /**
-     * AI mentor reply to the latest mentee message. Past turns must be
-     * supplied in chronological order (oldest first) as ChatTurn records.
-     */
-    public String generateMentorReply(MentorContext ctx, List<ChatTurn> history, String latestMenteeMessage) {
+    @Override
+    public String generateMentorReply(MentorContext ctx, MentorPersonality personality, String memory,
+                                      List<ChatTurn> history, String latestMenteeMessage) {
         if (!isConfigured()) return "";
 
         List<Map<String, Object>> messages = new ArrayList<>();
@@ -100,34 +94,89 @@ public class AIService {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", MODEL);
         body.put("max_tokens", 280);
-        body.put("system", buildMentorSystemBlocks(ctx));
+        body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", messages);
 
         return callForText(body, "mentor reply");
     }
 
-    /**
-     * Daily AI check-in message — sent by the scheduler when the mentor
-     * has not pinged the mentee today. Short, specific to today's misses.
-     */
-    public String generateMentorCheckIn(MentorContext ctx) {
+    @Override
+    public String generatePeriodicCheckIn(MentorContext ctx, MentorPersonality personality, String memory, CheckInWindow window) {
         if (!isConfigured()) return "";
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", MODEL);
         body.put("max_tokens", 220);
-        body.put("system", buildMentorSystemBlocks(ctx));
+        body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", List.of(
-                Map.of("role", "user", "content",
-                        "Daily check-in. Two sentences max. " +
-                        "Reference today's progress vs. their goals and propose one tiny next step. " +
-                        "Warm and direct — no filler like \"Great job!\" or \"Keep it up!\".")
+                Map.of("role", "user", "content", window.promptHint() + " Two sentences max. Warm and direct — no filler.")
         ));
 
-        return callForText(body, "mentor check-in");
+        return callForText(body, "periodic check-in " + window.name().toLowerCase());
     }
 
-    /** Performs the HTTP call and extracts the first text block. */
+    @Override
+    public String generateOverloadNudge(MentorContext ctx, MentorPersonality personality, String memory, OverloadAssessment assessment) {
+        if (!isConfigured()) return "";
+
+        String weakest = assessment.weakestHabitNames().isEmpty()
+                ? "(none surfaced)"
+                : String.join(", ", assessment.weakestHabitNames());
+        String userPrompt = """
+                The mentee looks overloaded — %d active habits at only %d%% weekly consistency and %d missed today.
+                Weakest habits right now: %s.
+                Write a 1–2 sentence in-character message that gently suggests dropping or pausing ONE habit so the rest stick.
+                Name the habit you recommend pausing. Do not moralise.
+                """.formatted(
+                        assessment.totalHabits(),
+                        assessment.weeklyConsistencyPercent(),
+                        assessment.missedTodayCount(),
+                        weakest
+                );
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", MODEL);
+        body.put("max_tokens", 200);
+        body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
+        body.put("messages", List.of(Map.of("role", "user", "content", userPrompt)));
+        return callForText(body, "overload nudge");
+    }
+
+    @Override
+    public String distillMemory(MentorContext ctx, List<ChatTurn> recentHistory, String previousMemory) {
+        if (!isConfigured()) return previousMemory == null ? "" : previousMemory;
+
+        StringBuilder transcript = new StringBuilder();
+        for (ChatTurn turn : recentHistory) {
+            String who = "user".equals(turn.role()) ? "Mentee" : "Mentor";
+            transcript.append(who).append(": ").append(turn.text()).append('\n');
+        }
+        String prev = previousMemory == null ? "(none)" : previousMemory.isBlank() ? "(none)" : previousMemory;
+        String prompt = """
+                Maintain a third-person memory note about this mentee for future AI mentor turns.
+                PREVIOUS MEMORY:
+                %s
+
+                RECENT CONVERSATION (oldest first):
+                %s
+
+                Return an updated memory in 80–100 words. Include: mood patterns, sticking points,
+                wins worth repeating, preferred cadence, and any stated constraint the mentor should
+                honour. Do NOT include today's stats (those are already in the profile block).
+                Output the memory only — no preamble, no labels.
+                """.formatted(prev, transcript.toString().strip());
+
+        Map<String, Object> body = Map.of(
+                "model", MODEL,
+                "max_tokens", 220,
+                "messages", List.of(Map.of("role", "user", "content", prompt))
+        );
+        String out = callForText(body, "memory distillation");
+        return out.isBlank() ? (previousMemory == null ? "" : previousMemory) : out;
+    }
+
+    // MARK: — HTTP + prompt helpers
+
     private String callForText(Map<String, Object> body, String label) {
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -161,39 +210,34 @@ public class AIService {
         return "";
     }
 
-    /**
-     * System prompt for the AI mentor.
-     *
-     * Rendered as a list with two blocks:
-     *   1. Persona/instructions — tiny, fully static so it caches across all users.
-     *   2. Mentee profile + stats — stable for a given mentee within the 5-min TTL.
-     *
-     * `cache_control` sits on the second block so everything before it (tools,
-     * system block 1, system block 2) is cached. Note: prompt caching only
-     * activates above ~4096 tokens on Haiku 4.5 — small habit lists won't hit
-     * that floor today, but the structure keeps the door open.
-     */
-    private List<Map<String, Object>> buildMentorSystemBlocks(MentorContext ctx) {
-        String persona = """
-                You are Forma, a focused AI accountability mentor inside the user's habit-tracker app.
-                Voice: warm, concrete, brief. Never use filler like "Great job!", "Keep it up!", "You've got this!".
-                Always reference the mentee's actual numbers, habit names, and consistency when relevant.
-                Use the HABIT TIMING block to recommend concrete times: e.g. if they consistently finish their morning run around 7am, suggest keeping that slot or pairing a nearby habit to it. Do not invent timing data that isn't in the block.
-                Always end with one tiny next action they can complete in under 30 minutes.
-                Reply in 1–3 short sentences unless the mentee explicitly asks for a deep breakdown.
-                Never claim to be human. If asked, say you are Forma's AI mentor.
-                """;
-
+    private List<Map<String, Object>> buildMentorSystemBlocks(MentorContext ctx, MentorPersonality personality, String memory) {
+        String persona = personalityPersona(personality);
         String profile = buildMenteeContextText(ctx);
+        String memoryBlock = (memory == null || memory.isBlank())
+                ? "MEMORY\n(no prior memory yet)"
+                : "MEMORY (carry-forward notes on this mentee)\n" + memory.strip();
 
         List<Map<String, Object>> blocks = new ArrayList<>();
         blocks.add(Map.of("type", "text", "text", persona));
         blocks.add(Map.of(
                 "type", "text",
-                "text", profile,
+                "text", profile + "\n\n" + memoryBlock,
                 "cache_control", Map.of("type", "ephemeral")
         ));
         return blocks;
+    }
+
+    private String personalityPersona(MentorPersonality personality) {
+        MentorPersonality p = personality == null ? MentorPersonality.COACH : personality;
+        return """
+                You are Forma, an AI accountability mentor inside the user's habit-tracker app.
+                %s
+                Always reference the mentee's actual numbers, habit names, and consistency when relevant.
+                Use the HABIT TIMING block to recommend concrete times; do not invent timing data that isn't there.
+                End with one tiny next action the mentee can complete in under 30 minutes.
+                Keep replies to 1–3 short sentences unless the mentee explicitly asks for a deep breakdown.
+                Never claim to be human. If asked, say you are Forma's AI mentor.
+                """.formatted(p.systemPromptBlock().strip());
     }
 
     private String buildMenteeContextText(MentorContext ctx) {
@@ -238,38 +282,15 @@ public class AIService {
     }
 
     private String buildWeeklyPrompt(String name, int pct, int perfectDays, int streak,
-                                     int totalHabits, List<String> habitNames) {
+                                     int totalHabits, List<String> habitNames, MentorPersonality personality) {
         String habits = habitNames.isEmpty() ? "various habits" : String.join(", ", habitNames);
+        String voiceHint = personality == null ? "" : personality.systemPromptBlock().strip() + "\n";
         return """
-                You are writing a short, warm, personalised insight for %s's weekly habit report email.
+                %sYou are writing a short, warm, personalised insight for %s's weekly habit report email.
                 Stats this week: %d%% consistency, %d perfect days, %d-day best streak, %d habits tracked (%s).
                 Write exactly 2 short sentences. Be specific to their numbers. Be encouraging but honest.
                 Do not use filler phrases like "Great job!" or "Keep it up!". Do not use bullet points or headers.
                 Output only the 2 sentences, nothing else.
-                """.formatted(name, pct, perfectDays, streak, totalHabits, habits);
+                """.formatted(voiceHint, name, pct, perfectDays, streak, totalHabits, habits);
     }
-
-    /// Snapshot of mentee state passed into mentor prompts.
-    /// `habitTimingSummary` is a pre-formatted, one-per-line description of
-    /// when the mentee typically completes each habit (e.g.
-    /// `"Morning run — mornings (~7am, 12 samples)"`), used so the AI can
-    /// recommend concrete times instead of generic encouragement.
-    public record MentorContext(
-            String displayName,
-            String timezone,
-            String language,
-            String goals,
-            int totalHabits,
-            List<String> habitNames,
-            int weeklyConsistencyPercent,
-            int perfectDaysThisWeek,
-            int bestStreak,
-            int historyDays,
-            int doneToday,
-            int missedToday,
-            String habitTimingSummary
-    ) {}
-
-    /** One turn of mentor↔mentee chat. role is "user" (mentee) or "assistant" (mentor). */
-    public record ChatTurn(String role, String text) {}
 }

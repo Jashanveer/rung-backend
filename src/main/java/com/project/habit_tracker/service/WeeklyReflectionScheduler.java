@@ -36,7 +36,8 @@ public class WeeklyReflectionScheduler {
     private final HabitRepository habitRepo;
     private final HabitCheckRepository habitCheckRepo;
     private final EmailService emailService;
-    private final AIService aiService;
+    private final MentorAI mentorAI;
+    private final PersonalityRotator personalityRotator;
 
     public WeeklyReflectionScheduler(
             UserRepository userRepo,
@@ -44,14 +45,16 @@ public class WeeklyReflectionScheduler {
             HabitRepository habitRepo,
             HabitCheckRepository habitCheckRepo,
             EmailService emailService,
-            AIService aiService
+            MentorAI mentorAI,
+            PersonalityRotator personalityRotator
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
         this.habitRepo = habitRepo;
         this.habitCheckRepo = habitCheckRepo;
         this.emailService = emailService;
-        this.aiService = aiService;
+        this.mentorAI = mentorAI;
+        this.personalityRotator = personalityRotator;
     }
 
     @Scheduled(cron = "0 0 9 * * SUN")
@@ -140,9 +143,15 @@ public class WeeklyReflectionScheduler {
 
                 String displayName = user.getUsername() != null ? user.getUsername() : user.getEmail();
 
-                // AI insight
-                String aiInsight = aiService.generateWeeklyInsight(
-                        displayName, consistency, perfectDays, bestStreak, habits.size(), habitNames);
+                // AI insight — rendered in the user's current rotating
+                // personality so the Sunday email echoes the same voice
+                // they've been hearing in chat all week.
+                UserProfile userProfile = profileRepo.findByUser(user).orElse(null);
+                MentorAI.MentorPersonality personality = userProfile != null
+                        ? personalityRotator.currentPersonalityFor(userProfile)
+                        : MentorAI.MentorPersonality.COACH;
+                String aiInsight = mentorAI.generateWeeklyInsight(
+                        displayName, consistency, perfectDays, bestStreak, habits.size(), habitNames, personality);
 
                 EmailService.WeeklyReflectionData data = new EmailService.WeeklyReflectionData(
                         consistency, habits.size(), bestStreak, perfectDays,

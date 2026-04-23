@@ -56,7 +56,8 @@ public class AccountabilityService {
     private final RewardService rewardService;
     private final StreakFreezeService streakFreezeService;
     private final EmailService emailService;
-    private final AIService aiService;
+    private final MentorAI mentorAI;
+    private final PersonalityRotator personalityRotator;
     private final ApplicationEventPublisher eventPublisher;
 
     public AccountabilityService(
@@ -74,7 +75,8 @@ public class AccountabilityService {
             RewardService rewardService,
             StreakFreezeService streakFreezeService,
             EmailService emailService,
-            AIService aiService,
+            MentorAI mentorAI,
+            PersonalityRotator personalityRotator,
             ApplicationEventPublisher eventPublisher
     ) {
         this.userRepo = userRepo;
@@ -91,7 +93,8 @@ public class AccountabilityService {
         this.rewardService = rewardService;
         this.streakFreezeService = streakFreezeService;
         this.emailService = emailService;
-        this.aiService = aiService;
+        this.mentorAI = mentorAI;
+        this.personalityRotator = personalityRotator;
         this.eventPublisher = eventPublisher;
     }
 
@@ -198,14 +201,99 @@ public class AccountabilityService {
     }
 
     /**
-     * Hourly AI-mentor check-in pass. For every active AI match where the AI
-     * mentor has not posted in the last 18 hours, generate one short check-in
-     * tailored to the mentee's current stats and post it as the AI mentor.
+     * Sends one windowed check-in as the AI mentor on the given match.
+     * Called by {@link MentorCheckInScheduler} once per window per day, after
+     * it has already verified the mentee has incomplete habits and this
+     * window hasn't fired yet today. Persists the generated message through
+     * the regular mentor-chat path so the client renders it via existing SSE.
+     */
+    @Transactional
+    public void aiScheduledCheckIn(Long matchId, MentorAI.CheckInWindow window) {
+        if (!mentorAI.isConfigured()) return;
+        MentorMatch match = matchRepo.findById(matchId).orElse(null);
+        if (match == null || !match.isAiMentor() || match.getStatus() != MentorMatchStatus.ACTIVE) return;
+
+        User mentee = match.getMentee();
+        User aiMentor = match.getMentor();
+        UserProfile profile = ensureProfile(mentee);
+        MentorAI.MentorPersonality personality = personalityRotator.currentPersonalityFor(profile);
+        String memory = profile.getMentorMemory();
+
+        String text = mentorAI.generatePeriodicCheckIn(buildMentorContext(mentee, profile), personality, memory, window);
+        if (text.isBlank()) return;
+        postAiMentorMessage(match, aiMentor, text);
+    }
+
+    /**
+     * Sends an in-character "you look overloaded — drop one habit" message.
+     * Called by {@link MentorOverloadDetector} for users flagged as stretched
+     * thin. Assessment is pre-computed in code (not by the AI) — the AI only
+     * drafts the copy in the user's current personality.
+     */
+    @Transactional
+    public void aiOverloadNudge(Long matchId, MentorAI.OverloadAssessment assessment) {
+        if (!mentorAI.isConfigured() || !assessment.overloaded()) return;
+        MentorMatch match = matchRepo.findById(matchId).orElse(null);
+        if (match == null || !match.isAiMentor() || match.getStatus() != MentorMatchStatus.ACTIVE) return;
+
+        User mentee = match.getMentee();
+        User aiMentor = match.getMentor();
+        UserProfile profile = ensureProfile(mentee);
+        MentorAI.MentorPersonality personality = personalityRotator.currentPersonalityFor(profile);
+        String memory = profile.getMentorMemory();
+
+        String text = mentorAI.generateOverloadNudge(buildMentorContext(mentee, profile), personality, memory, assessment);
+        if (text.isBlank()) return;
+        postAiMentorMessage(match, aiMentor, text);
+    }
+
+    /**
+     * Updates the mentee's rolling memory note from the recent chat history.
+     * Invoked nightly by {@link MentorMemoryDistiller} so chat latency is
+     * never blocked on the memory call. Lives here so it shares the same
+     * transactional context as the rest of the AI-mentor surface.
+     */
+    @Transactional
+    public void refreshAiMentorMemory(Long matchId) {
+        if (!mentorAI.isConfigured()) return;
+        MentorMatch match = matchRepo.findById(matchId).orElse(null);
+        if (match == null || !match.isAiMentor()) return;
+
+        User mentee = match.getMentee();
+        UserProfile profile = ensureProfile(mentee);
+        List<MentorAI.ChatTurn> history = recentMentorHistoryAsTurns(match, match.getMentor());
+        if (history.isEmpty()) return;
+
+        String updated = mentorAI.distillMemory(buildMentorContext(mentee, profile), history, profile.getMentorMemory());
+        if (updated == null || updated.isBlank()) return;
+        profile.setMentorMemory(updated);
+        profileRepo.save(profile);
+    }
+
+    private void postAiMentorMessage(MentorMatch match, User aiMentor, String text) {
+        MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
+                .match(match)
+                .sender(aiMentor)
+                .message(truncateForChat(text))
+                .nudge(true)
+                .createdAt(Instant.now())
+                .build());
+        streamService.publishToMatch(match.getId(), "message.created", toMessage(saved));
+        streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
+        pushNudgeToReceiver(aiMentor, match, saved.getMessage());
+    }
+
+    /**
+     * Legacy hourly AI-mentor pass — retained as a safety net so users with
+     * AI matches still get at least one check-in per day even if the window
+     * scheduler misses them (e.g. server was down during all 4 windows).
+     * The 18-hour cooldown keeps it from piling on top of the new windowed
+     * messages.
      */
     @Scheduled(cron = "0 0 * * * *")
     @Transactional
     public void aiMentorCheckIns() {
-        if (!aiService.isConfigured()) return;
+        if (!mentorAI.isConfigured()) return;
         Instant cutoff = Instant.now().minus(18, ChronoUnit.HOURS);
         List<MentorMatch> active = matchRepo.findAllByStatus(MentorMatchStatus.ACTIVE);
         for (MentorMatch match : active) {
@@ -213,7 +301,15 @@ public class AccountabilityService {
             User aiMentor = match.getMentor();
             if (mentorCheckedInSince(match, cutoff)) continue;
 
-            String text = aiService.generateMentorCheckIn(buildMentorContext(match.getMentee(), ensureProfile(match.getMentee())));
+            UserProfile profile = ensureProfile(match.getMentee());
+            MentorAI.MentorPersonality personality = personalityRotator.currentPersonalityFor(profile);
+            String memory = profile.getMentorMemory();
+            String text = mentorAI.generatePeriodicCheckIn(
+                    buildMentorContext(match.getMentee(), profile),
+                    personality,
+                    memory,
+                    MentorAI.CheckInWindow.EVENING
+            );
             if (text.isBlank()) continue;
 
             MentorshipMessage saved = messageRepo.save(MentorshipMessage.builder()
@@ -370,7 +466,7 @@ public class AccountabilityService {
         streamService.publishToMatch(match.getId(), "message.created", toMessage(welcomeMessage));
         streamService.publishToMatch(match.getId(), "match.updated", toMatch(match));
 
-        if (aiService.isConfigured()) {
+        if (mentorAI.isConfigured()) {
             eventPublisher.publishEvent(
                     new AiMentorWelcomeRequestedEvent(match.getId(), welcomeMessage.getId())
             );
@@ -385,14 +481,16 @@ public class AccountabilityService {
     /// or the message has already been replaced.
     @Transactional
     public void regenerateAiMentorWelcome(Long matchId, Long welcomeMessageId) {
-        if (!aiService.isConfigured()) return;
+        if (!mentorAI.isConfigured()) return;
         MentorMatch match = matchRepo.findById(matchId).orElse(null);
         if (match == null || !match.isAiMentor()) return;
         MentorshipMessage message = messageRepo.findById(welcomeMessageId).orElse(null);
         if (message == null) return;
 
         UserProfile menteeProfile = ensureProfile(match.getMentee());
-        String text = aiService.generateMentorWelcome(buildMentorContext(match.getMentee(), menteeProfile));
+        MentorAI.MentorPersonality personality = personalityRotator.currentPersonalityFor(menteeProfile);
+        String memory = menteeProfile.getMentorMemory();
+        String text = mentorAI.generateMentorWelcome(buildMentorContext(match.getMentee(), menteeProfile), personality, memory);
         if (text.isBlank()) return;
 
         message.setMessage(truncateForChat(text));
@@ -554,16 +652,20 @@ public class AccountabilityService {
     }
 
     private void replyAsAiMentor(MentorMatch match, String latestMenteeMessage) {
-        if (!aiService.isConfigured()) return;
+        if (!mentorAI.isConfigured()) return;
 
         User mentee = match.getMentee();
         User aiMentor = match.getMentor();
         UserProfile menteeProfile = ensureProfile(mentee);
+        MentorAI.MentorPersonality personality = personalityRotator.currentPersonalityFor(menteeProfile);
+        String memory = menteeProfile.getMentorMemory();
 
-        List<AIService.ChatTurn> history = recentMentorHistoryAsTurns(match, aiMentor);
+        List<MentorAI.ChatTurn> history = recentMentorHistoryAsTurns(match, aiMentor);
 
-        String reply = aiService.generateMentorReply(
+        String reply = mentorAI.generateMentorReply(
                 buildMentorContext(mentee, menteeProfile),
+                personality,
+                memory,
                 history,
                 latestMenteeMessage
         );
@@ -581,16 +683,16 @@ public class AccountabilityService {
         pushNudgeToReceiver(aiMentor, match, saved.getMessage());
     }
 
-    /** Pulls the most recent N messages oldest-first as Anthropic-style turns. */
-    private List<AIService.ChatTurn> recentMentorHistoryAsTurns(MentorMatch match, User aiMentor) {
+    /** Pulls the most recent N messages oldest-first as MentorAI-style turns. */
+    private List<MentorAI.ChatTurn> recentMentorHistoryAsTurns(MentorMatch match, User aiMentor) {
         List<MentorshipMessage> recentDesc = messageRepo.findTop20ByMatchOrderByCreatedAtDesc(match);
         int take = Math.min(recentDesc.size(), AI_HISTORY_TURNS);
         List<MentorshipMessage> chronological = new ArrayList<>(recentDesc.subList(0, take));
         Collections.reverse(chronological);
-        List<AIService.ChatTurn> turns = new ArrayList<>(chronological.size());
+        List<MentorAI.ChatTurn> turns = new ArrayList<>(chronological.size());
         for (MentorshipMessage msg : chronological) {
             String role = msg.getSender().getId().equals(aiMentor.getId()) ? "assistant" : "user";
-            turns.add(new AIService.ChatTurn(role, msg.getMessage()));
+            turns.add(new MentorAI.ChatTurn(role, msg.getMessage()));
         }
         return turns;
     }
@@ -605,12 +707,12 @@ public class AccountabilityService {
         return userRepo.findByEmail(AI_MENTOR_EMAIL);
     }
 
-    private AIService.MentorContext buildMentorContext(User mentee, UserProfile menteeProfile) {
+    private MentorAI.MentorContext buildMentorContext(User mentee, UserProfile menteeProfile) {
         UserStats stats = statsFor(mentee);
         List<String> habitNames = habitRepo.findAllByUserAndEntryType(mentee, HabitEntryType.HABIT).stream()
                 .map(Habit::getTitle)
                 .toList();
-        return new AIService.MentorContext(
+        return new MentorAI.MentorContext(
                 menteeProfile.getDisplayName(),
                 menteeProfile.getTimezone(),
                 menteeProfile.getLanguage(),
@@ -675,8 +777,15 @@ public class AccountabilityService {
         User mentee = match.getMentee();
         User aiMentor = match.getMentor();
         UserProfile menteeProfile = ensureProfile(mentee);
+        MentorAI.MentorPersonality personality = personalityRotator.currentPersonalityFor(menteeProfile);
+        String memory = menteeProfile.getMentorMemory();
 
-        String text = aiService.generateMentorCheckIn(buildMentorContext(mentee, menteeProfile));
+        String text = mentorAI.generatePeriodicCheckIn(
+                buildMentorContext(mentee, menteeProfile),
+                personality,
+                memory,
+                MentorAI.CheckInWindow.NIGHT
+        );
         if (text.isBlank()) {
             text = "You've missed " + missedToday + " habit" + (missedToday == 1 ? "" : "s")
                     + " today. Pick the smallest one and finish it in the next 15 minutes.";

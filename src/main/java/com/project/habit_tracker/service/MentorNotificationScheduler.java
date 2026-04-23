@@ -57,9 +57,9 @@ public class MentorNotificationScheduler {
      *
      *   • Human mentor matches — push the update to the mentor so they can
      *     nudge the mentee.
-     *   • AI mentor matches — the AI mentor holds the mentee accountable
-     *     directly: an AI-generated chat message is posted to the mentor
-     *     chat and pushed to the mentee's own device.
+     *   • AI mentor matches — SKIPPED here. {@link MentorCheckInScheduler}
+     *     handles them on a per-user-timezone windowed schedule so the
+     *     messages land in the mentee's own evening, not the server's.
      */
     @Scheduled(cron = "0 0 20 * * *")
     public void notifyMentorsOfMissedHabits() {
@@ -68,17 +68,13 @@ public class MentorNotificationScheduler {
             if (notifiedToday.contains(match.getId())) {
                 continue;
             }
+            // AI mentor matches are driven by MentorCheckInScheduler in the
+            // mentee's local timezone — skip them here to avoid double-firing.
+            if (match.isAiMentor()) continue;
             try {
                 User mentee = match.getMentee();
                 int missedToday = accountabilityService.missedTodayFor(mentee);
                 if (missedToday <= 0) continue;
-
-                if (match.isAiMentor()) {
-                    accountabilityService.aiNudgeMenteeForMissedHabits(match.getId(), missedToday);
-                    notifiedToday.add(match.getId());
-                    log.debug("AI mentor nudged mentee {} about {} missed habits", mentee.getId(), missedToday);
-                    continue;
-                }
 
                 String menteeDisplayName = profileRepo.findByUser(mentee)
                         .map(UserProfile::getDisplayName)
