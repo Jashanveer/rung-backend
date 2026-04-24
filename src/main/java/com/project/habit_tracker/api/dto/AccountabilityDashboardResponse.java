@@ -134,7 +134,13 @@ public record AccountabilityDashboardResponse(
     public record LeaderboardEntry(
             String displayName,
             int score,
-            boolean currentUser
+            boolean currentUser,
+            /// Tier-weighted score (auto × 10, partial × 5, self × 1) summed
+            /// over the user's checks this week. Zero until the full
+            /// tier-weighted scoring pass ships — currently just a
+            /// placeholder so older clients can start round-tripping the
+            /// field without another wire-format bump.
+            int verifiedScore
     ) {
     }
 

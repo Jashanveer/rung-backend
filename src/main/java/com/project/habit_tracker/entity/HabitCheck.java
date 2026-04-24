@@ -34,4 +34,16 @@ public class HabitCheck {
     // Nullable — historical rows won't have it
     @Column(name = "completed_at")
     private Instant completedAt;
+
+    /// Tier awarded for this specific check — captured at the moment the
+    /// client reported it so later tier changes to the parent Habit don't
+    /// retroactively adjust historical scoring. Null on legacy rows.
+    @Column(name = "verification_tier", length = 16)
+    private String verificationTier;
+
+    /// Signal source that corroborated this check (or `selfReport` when no
+    /// external signal was available). Nullable to preserve back-compat
+    /// with legacy rows that predate the verification stack.
+    @Column(name = "verification_source", length = 32)
+    private String verificationSource;
 }

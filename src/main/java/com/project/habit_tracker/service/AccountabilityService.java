@@ -1599,7 +1599,7 @@ public class AccountabilityService {
                 target,
                 1,
                 List.of(
-                        new AccountabilityDashboardResponse.LeaderboardEntry(displayName, score, true)
+                        new AccountabilityDashboardResponse.LeaderboardEntry(displayName, score, true, 0)
                 )
         );
     }

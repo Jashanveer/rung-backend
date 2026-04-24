@@ -50,12 +50,20 @@ public class HabitService {
     }
 
     public HabitResponse createHabit(Long userId, HabitCreateRequest req) {
-        return createByType(userId, req.title(), req.reminderWindow(), HabitEntryType.HABIT);
+        return createByType(
+                userId, req.title(), req.reminderWindow(), HabitEntryType.HABIT,
+                req.canonicalKey(), req.verificationTier(), req.verificationSource(),
+                req.verificationParam(), req.weeklyTarget()
+        );
     }
 
     @Transactional
     public HabitResponse updateHabit(Long userId, Long habitId, HabitUpdateRequest req) {
-        return updateByType(userId, habitId, req.title(), req.reminderWindow(), HabitEntryType.HABIT);
+        return updateByType(
+                userId, habitId, req.title(), req.reminderWindow(), HabitEntryType.HABIT,
+                req.canonicalKey(), req.verificationTier(), req.verificationSource(),
+                req.verificationParam(), req.weeklyTarget()
+        );
     }
 
     @Transactional
@@ -64,8 +72,10 @@ public class HabitService {
     }
 
     @Transactional
-    public HabitResponse setCheck(Long userId, Long habitId, String dateKey, boolean done) {
-        return setCheckByType(userId, habitId, dateKey, done, HabitEntryType.HABIT);
+    public HabitResponse setCheck(Long userId, Long habitId, String dateKey, boolean done,
+                                  String verificationTier, String verificationSource) {
+        return setCheckByType(userId, habitId, dateKey, done, HabitEntryType.HABIT,
+                verificationTier, verificationSource);
     }
 
     public List<TaskResponse> listTasks(Long userId) {
@@ -75,12 +85,20 @@ public class HabitService {
     }
 
     public TaskResponse createTask(Long userId, TaskCreateRequest req) {
-        return toTaskResponse(createByType(userId, req.title(), null, HabitEntryType.TASK));
+        // Tasks do not carry verification metadata — pass nulls so the
+        // response shape is uniform and nothing leaks into the tasks table.
+        return toTaskResponse(createByType(
+                userId, req.title(), null, HabitEntryType.TASK,
+                null, null, null, null, null
+        ));
     }
 
     @Transactional
     public TaskResponse updateTask(Long userId, Long taskId, TaskUpdateRequest req) {
-        return toTaskResponse(updateByType(userId, taskId, req.title(), null, HabitEntryType.TASK));
+        return toTaskResponse(updateByType(
+                userId, taskId, req.title(), null, HabitEntryType.TASK,
+                null, null, null, null, null
+        ));
     }
 
     @Transactional
@@ -90,7 +108,11 @@ public class HabitService {
 
     @Transactional
     public TaskResponse setTaskCheck(Long userId, Long taskId, String dateKey, boolean done) {
-        return toTaskResponse(setCheckByType(userId, taskId, dateKey, done, HabitEntryType.TASK));
+        // Tasks don't participate in tier-weighted scoring — verification
+        // metadata is always null for their checks.
+        return toTaskResponse(setCheckByType(
+                userId, taskId, dateKey, done, HabitEntryType.TASK, null, null
+        ));
     }
 
     private List<HabitResponse> listByType(Long userId, HabitEntryType type) {
@@ -108,41 +130,53 @@ public class HabitService {
 
         List<HabitResponse> out = new ArrayList<>();
         for (Habit h : habits) {
-            out.add(new HabitResponse(h.getId(), h.getTitle(), h.getReminderWindow(),
-                    checksByHabitId.getOrDefault(h.getId(), Map.of())));
+            out.add(toHabitResponse(h, checksByHabitId.getOrDefault(h.getId(), Map.of())));
         }
         return out;
     }
 
-    private HabitResponse createByType(Long userId, String title, String reminderWindow, HabitEntryType type) {
+    private HabitResponse createByType(Long userId, String title, String reminderWindow, HabitEntryType type,
+                                       String canonicalKey, String verificationTier, String verificationSource,
+                                       Double verificationParam, Integer weeklyTarget) {
         User user = requireUser(userId);
         Habit habit = Habit.builder()
                 .user(user)
                 .title(title)
                 .reminderWindow(type == HabitEntryType.HABIT ? reminderWindow : null)
                 .entryType(type)
+                .canonicalKey(type == HabitEntryType.HABIT ? canonicalKey : null)
+                .verificationTier(type == HabitEntryType.HABIT ? verificationTier : null)
+                .verificationSource(type == HabitEntryType.HABIT ? verificationSource : null)
+                .verificationParam(type == HabitEntryType.HABIT ? verificationParam : null)
+                .weeklyTarget(type == HabitEntryType.HABIT ? weeklyTarget : null)
                 .build();
         habitRepo.save(habit);
-        return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), Map.of());
+        return toHabitResponse(habit, Map.of());
     }
 
     // @Transactional omitted here — Spring's AOP proxy does not intercept private calls,
     // so it would be a no-op. Every public caller is already @Transactional.
-    private HabitResponse updateByType(Long userId, Long entryId, String title, String reminderWindow, HabitEntryType type) {
+    private HabitResponse updateByType(Long userId, Long entryId, String title, String reminderWindow,
+                                       HabitEntryType type, String canonicalKey, String verificationTier,
+                                       String verificationSource, Double verificationParam, Integer weeklyTarget) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
                 .orElseThrow(() -> new IllegalArgumentException(entityLabel(type) + " not found"));
 
         habit.setTitle(title);
         habit.setReminderWindow(type == HabitEntryType.HABIT ? reminderWindow : null);
+        // Verification metadata: null means "leave unchanged" — callers that
+        // want to clear must send a dedicated null sentinel (not yet needed).
+        if (type == HabitEntryType.HABIT) {
+            if (canonicalKey != null) habit.setCanonicalKey(canonicalKey);
+            if (verificationTier != null) habit.setVerificationTier(verificationTier);
+            if (verificationSource != null) habit.setVerificationSource(verificationSource);
+            if (verificationParam != null) habit.setVerificationParam(verificationParam);
+            if (weeklyTarget != null) habit.setWeeklyTarget(weeklyTarget);
+        }
         habitRepo.save(habit);
 
-        return new HabitResponse(
-                habit.getId(),
-                habit.getTitle(),
-                habit.getReminderWindow(),
-                checksFor(habit)
-        );
+        return toHabitResponse(habit, checksFor(habit));
     }
 
     // @Transactional omitted — see note on updateByType.
@@ -156,7 +190,8 @@ public class HabitService {
     }
 
     // @Transactional omitted — see note on updateByType.
-    private HabitResponse setCheckByType(Long userId, Long entryId, String dateKey, boolean done, HabitEntryType type) {
+    private HabitResponse setCheckByType(Long userId, Long entryId, String dateKey, boolean done,
+                                         HabitEntryType type, String verificationTier, String verificationSource) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
                 .orElseThrow(() -> new IllegalArgumentException(entityLabel(type) + " not found"));
@@ -171,6 +206,11 @@ public class HabitService {
         hc.setDone(done);
         if (done) {
             hc.setCompletedAt(Instant.now());
+            // Record the verification tier/source for this specific check.
+            // Only overwrite on done=true so an untoggle-then-retoggle flow
+            // refreshes the tier; toggling off leaves the historical record.
+            if (verificationTier != null) hc.setVerificationTier(verificationTier);
+            if (verificationSource != null) hc.setVerificationSource(verificationSource);
         } else {
             hc.setCompletedAt(null);
         }
@@ -184,7 +224,7 @@ public class HabitService {
         }
 
         // Return the full check map for this habit so callers always have the real state
-        return new HabitResponse(habit.getId(), habit.getTitle(), habit.getReminderWindow(), checksFor(habit));
+        return toHabitResponse(habit, checksFor(habit));
     }
 
     private TaskResponse toTaskResponse(HabitResponse habitResponse) {
@@ -206,5 +246,19 @@ public class HabitService {
             if (c.isDone()) map.put(c.getDateKey(), true);
         }
         return map;
+    }
+
+    private HabitResponse toHabitResponse(Habit habit, Map<String, Boolean> checksByDate) {
+        return new HabitResponse(
+                habit.getId(),
+                habit.getTitle(),
+                habit.getReminderWindow(),
+                checksByDate,
+                habit.getCanonicalKey(),
+                habit.getVerificationTier(),
+                habit.getVerificationSource(),
+                habit.getVerificationParam(),
+                habit.getWeeklyTarget()
+        );
     }
 }

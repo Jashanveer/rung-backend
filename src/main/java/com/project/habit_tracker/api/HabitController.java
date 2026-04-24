@@ -63,6 +63,9 @@ public class HabitController {
                                                   @PathVariable String dateKey,
                                                   @Valid @RequestBody CheckUpdateRequest req) {
 
-        return ResponseEntity.ok(habitService.setCheck(userId(auth), habitId, dateKey, req.done()));
+        return ResponseEntity.ok(habitService.setCheck(
+                userId(auth), habitId, dateKey, req.done(),
+                req.verificationTier(), req.verificationSource()
+        ));
     }
 }
