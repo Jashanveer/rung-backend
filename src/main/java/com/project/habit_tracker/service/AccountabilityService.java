@@ -813,7 +813,7 @@ public class AccountabilityService {
                 .map(p -> p.getDisplayName())
                 .orElse("Your mentor");
         deviceTokenService.tokensForUser(receiver).forEach(dt ->
-                apnsService.sendNudge(dt.getToken(), senderName, message)
+                apnsService.sendNudge(dt.getToken(), dt.getPlatform(), senderName, message)
         );
     }
 

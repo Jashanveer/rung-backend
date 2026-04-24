@@ -84,7 +84,7 @@ public class MentorNotificationScheduler {
                 User mentor = match.getMentor();
                 List<DeviceToken> tokens = deviceTokenService.tokensForUser(mentor);
                 for (DeviceToken dt : tokens) {
-                    apnsService.sendNudge(dt.getToken(), "Habit Tracker", body);
+                    apnsService.sendNudge(dt.getToken(), dt.getPlatform(), "Habit Tracker", body);
                 }
                 notifiedToday.add(match.getId());
                 log.debug("Notified mentor {} about mentee {} ({} missed habits)", mentor.getId(), mentee.getId(), missedToday);
