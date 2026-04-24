@@ -20,6 +20,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
+import java.time.temporal.WeekFields;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -1093,6 +1094,7 @@ public class AccountabilityService {
         int accountabilityScore = Math.min(100, (int) Math.round(weeklyConsistency * 70 + progressToday * 30));
         int recentPerfectDays = recentPerfectDays(habits, checks);
         int yearPerfectDays = yearPerfectDays(habits, checks);
+        int verifiedScore = computeVerifiedScore(checks);
 
         return new UserStats(
                 totalHabits,
@@ -1112,8 +1114,45 @@ public class AccountabilityService {
                 historyDays,
                 rewards.checksToday(),
                 rewards.rewardEligible(),
-                yearPerfectDays
+                yearPerfectDays,
+                verifiedScore
         );
+    }
+
+    /// Sums the user's checks for the current ISO week, weighted by the
+    /// `verification_tier` captured when the check was recorded:
+    /// auto × 10, partial × 5, selfReport × 1, missing tier × 0. This is
+    /// the anti-cheat number that powers the leaderboard's `verifiedScore`
+    /// — a self-reported habit can't out-earn a HealthKit-verified one.
+    private int computeVerifiedScore(List<HabitCheck> checks) {
+        if (checks.isEmpty()) return 0;
+        Set<String> weekKeys = isoWeekDateKeys(LocalDate.now());
+        int score = 0;
+        for (HabitCheck check : checks) {
+            if (!check.isDone()) continue;
+            if (!weekKeys.contains(check.getDateKey())) continue;
+            String tier = check.getVerificationTier();
+            if (tier == null) continue;
+            score += switch (tier) {
+                case "auto" -> 10;
+                case "partial" -> 5;
+                case "selfReport" -> 1;
+                default -> 0;
+            };
+        }
+        return score;
+    }
+
+    /// All seven date keys (Mon..Sun) for the ISO week containing
+    /// `referenceDate`, formatted as "yyyy-MM-dd" to match `HabitCheck`.
+    private Set<String> isoWeekDateKeys(LocalDate referenceDate) {
+        WeekFields weekFields = WeekFields.ISO;
+        LocalDate monday = referenceDate.with(weekFields.dayOfWeek(), 1);
+        Set<String> keys = new HashSet<>();
+        for (int offset = 0; offset < 7; offset++) {
+            keys.add(monday.plusDays(offset).toString());
+        }
+        return keys;
     }
 
     /// Single-shot bulk loader — issues exactly two queries (habits + checks) for
@@ -1599,7 +1638,7 @@ public class AccountabilityService {
                 target,
                 1,
                 List.of(
-                        new AccountabilityDashboardResponse.LeaderboardEntry(displayName, score, true, 0)
+                        new AccountabilityDashboardResponse.LeaderboardEntry(displayName, score, true, stats.verifiedScore())
                 )
         );
     }
@@ -1871,7 +1910,12 @@ public class AccountabilityService {
             int historyDays,
             int checksToday,
             boolean rewardEligible,
-            int yearPerfectDays
+            int yearPerfectDays,
+            /// Tier-weighted score for this ISO week. auto × 10, partial × 5,
+            /// selfReport × 1, null tier × 0. Drives the leaderboard's
+            /// anti-cheat ranking — users who actually verified their
+            /// habits via HealthKit out-earn users who only self-reported.
+            int verifiedScore
     ) {
     }
 

@@ -22,6 +22,8 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     boolean existsByUsername(String username);
 
+    Optional<User> findByAppleSub(String appleSub);
+
     @Query("""
             select u from User u
             where u.id <> :userId

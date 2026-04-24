@@ -49,6 +49,20 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(req));
     }
 
+    /**
+     * Sign in with Apple — exchanges a verified Apple identity token for
+     * Forma's own access + refresh JWT pair. Same rate-limit budget as
+     * the password login because both surface the same auth.
+     */
+    @PostMapping("/apple")
+    public ResponseEntity<AuthResponse> appleLogin(
+            @Valid @RequestBody AppleLoginRequest req,
+            HttpServletRequest httpReq
+    ) {
+        rateLimiter.checkLogin(clientIp(httpReq));
+        return ResponseEntity.ok(authService.appleLogin(req));
+    }
+
     @PostMapping("/refresh")
     public ResponseEntity<AuthResponse> refresh(
             @Valid @RequestBody AuthRefreshRequest req,

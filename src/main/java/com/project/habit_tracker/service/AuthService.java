@@ -1,9 +1,11 @@
 package com.project.habit_tracker.service;
 
+import com.project.habit_tracker.api.dto.AppleLoginRequest;
 import com.project.habit_tracker.api.dto.AuthLoginRequest;
 import com.project.habit_tracker.api.dto.AuthRefreshRequest;
 import com.project.habit_tracker.api.dto.AuthRegisterRequest;
 import com.project.habit_tracker.api.dto.AuthResponse;
+import com.project.habit_tracker.security.AppleIdTokenVerifier;
 import com.project.habit_tracker.security.EncryptedStringConverter;
 import com.project.habit_tracker.entity.EmailVerificationCode;
 import com.project.habit_tracker.entity.PasswordResetToken;
@@ -48,6 +50,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final EmailService emailService;
     private final EncryptedStringConverter encConverter;
+    private final AppleIdTokenVerifier appleVerifier;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final SecureRandom random = new SecureRandom();
 
@@ -59,7 +62,8 @@ public class AuthService {
             RefreshTokenRepository refreshTokenRepo,
             JwtService jwtService,
             EmailService emailService,
-            EncryptedStringConverter encConverter
+            EncryptedStringConverter encConverter,
+            AppleIdTokenVerifier appleVerifier
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -69,6 +73,7 @@ public class AuthService {
         this.jwtService = jwtService;
         this.emailService = emailService;
         this.encConverter = encConverter;
+        this.appleVerifier = appleVerifier;
     }
 
     @Transactional
@@ -125,6 +130,102 @@ public class AuthService {
         emailService.sendWelcome(email, username);
 
         return issueTokens(user);
+    }
+
+    /**
+     * Sign in with Apple — verifies the identityToken against Apple's
+     * JWKS, then resolves to an existing User by `sub`, by email match,
+     * or by provisioning a new account on first sign-in. Always returns
+     * a fresh access/refresh pair the same shape as password login.
+     */
+    @Transactional
+    public AuthResponse appleLogin(AppleLoginRequest req) {
+        AppleIdTokenVerifier.AppleIdToken token = appleVerifier.verify(req.identityToken());
+
+        // 1. Already-linked Apple account → fast path
+        var existing = userRepo.findByAppleSub(token.sub());
+        if (existing.isPresent()) {
+            return issueTokens(existing.get());
+        }
+
+        // 2. First sign-in — Apple includes email exactly once per user.
+        // Subsequent logins drop it, so a missing email here means we
+        // expected a linked account but didn't find one. Bail honestly.
+        String rawEmail = token.email();
+        if (rawEmail == null || rawEmail.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Apple sign-in not yet linked to an account; revoke Apple's "
+                  + "Forma authorization and sign in again to relink."
+            );
+        }
+        String email = normalizeEmail(rawEmail);
+        String emailHash = encConverter.hash(email);
+
+        // 3. Email collision with a password-only account → link it so
+        // the user keeps a single profile. They can still log in via
+        // password later; the apple_sub just augments the row.
+        var byEmail = userRepo.findByEmailHash(emailHash);
+        if (byEmail.isPresent()) {
+            User user = byEmail.get();
+            user.setAppleSub(token.sub());
+            userRepo.save(user);
+            return issueTokens(user);
+        }
+
+        // 4. Brand-new user — provision username + profile from email.
+        User user = createAppleUser(email, emailHash, token.sub(), req.displayName());
+        return issueTokens(user);
+    }
+
+    /**
+     * Provisions a new User + UserProfile for a first-time Apple sign-in.
+     * Username is derived from the email local-part with a numeric suffix
+     * if necessary; password hash is a random unusable string (the user
+     * authenticates via Apple from now on, not via password).
+     */
+    private User createAppleUser(String email, String emailHash, String appleSub, String displayName) {
+        String username = generateUniqueUsername(email);
+        String safeDisplayName = (displayName == null || displayName.isBlank())
+                ? username
+                : displayName.trim();
+
+        User user = User.builder()
+                .username(username)
+                .email(email)
+                .emailHash(emailHash)
+                .passwordHash(encoder.encode(UUID.randomUUID().toString()))
+                .appleSub(appleSub)
+                .build();
+        userRepo.save(user);
+
+        UserProfile profile = UserProfile.builder()
+                .user(user)
+                .displayName(safeDisplayName)
+                .avatarUrl(normalizeAvatarUrl(null, username))
+                .timezone(ZoneId.systemDefault().getId())
+                .language(Locale.getDefault().getLanguage().toUpperCase(Locale.ROOT))
+                .goals("Daily consistency")
+                .build();
+        profileRepo.save(profile);
+
+        emailService.sendWelcome(email, safeDisplayName);
+        return user;
+    }
+
+    private String generateUniqueUsername(String email) {
+        int at = email.indexOf('@');
+        String base = (at > 0 ? email.substring(0, at) : email)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]", "");
+        if (base.isEmpty()) base = "user";
+        if (base.length() > 32) base = base.substring(0, 32);
+        if (!userRepo.existsByUsername(base)) return base;
+        for (int suffix = 2; suffix < 1_000; suffix++) {
+            String candidate = base + suffix;
+            if (!userRepo.existsByUsername(candidate)) return candidate;
+        }
+        // Fall back to a UUID slug — astronomically unlikely with 1000 misses.
+        return base + UUID.randomUUID().toString().substring(0, 8);
     }
 
     public AuthResponse login(AuthLoginRequest req) {

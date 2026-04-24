@@ -35,4 +35,10 @@ public class User {
 
     @Column(nullable = false)
     private String passwordHash;
+
+    /// Apple's identity-token `sub` claim — stable per-user-per-team id
+    /// for accounts that signed up via Sign in with Apple. Null for
+    /// password-only accounts. Unique-indexed at the DB level (V14).
+    @Column(name = "apple_sub", length = 255)
+    private String appleSub;
 }
