@@ -30,15 +30,29 @@ public class HabitService {
     private final UserRepository userRepo;
     private final RewardService rewardService;
     private final RewardGrantRepository rewardGrantRepo;
+    private final AccountabilityStreamService streamService;
 
     public HabitService(HabitRepository habitRepo, HabitCheckRepository checkRepo,
                         UserRepository userRepo, RewardService rewardService,
-                        RewardGrantRepository rewardGrantRepo) {
+                        RewardGrantRepository rewardGrantRepo,
+                        AccountabilityStreamService streamService) {
         this.habitRepo = habitRepo;
         this.checkRepo = checkRepo;
         this.userRepo = userRepo;
         this.rewardService = rewardService;
         this.rewardGrantRepo = rewardGrantRepo;
+        this.streamService = streamService;
+    }
+
+    /// Nudges every other SSE-subscribed device the user has open —
+    /// they respond to the event by running their normal sync pass,
+    /// so changes land across devices within seconds instead of on
+    /// the next 5-minute timer tick. The event payload is intentionally
+    /// minimal; reconciliation logic on the client already handles the
+    /// data fetch.
+    private void broadcastHabitsChanged(Long userId) {
+        streamService.publishToUser(userId, "habits.changed",
+                Map.of("at", Instant.now().toString()));
     }
 
     private User requireUser(Long userId) {
@@ -151,6 +165,7 @@ public class HabitService {
                 .weeklyTarget(type == HabitEntryType.HABIT ? weeklyTarget : null)
                 .build();
         habitRepo.save(habit);
+        broadcastHabitsChanged(userId);
         return toHabitResponse(habit, Map.of());
     }
 
@@ -175,6 +190,7 @@ public class HabitService {
             if (weeklyTarget != null) habit.setWeeklyTarget(weeklyTarget);
         }
         habitRepo.save(habit);
+        broadcastHabitsChanged(userId);
 
         return toHabitResponse(habit, checksFor(habit));
     }
@@ -187,6 +203,7 @@ public class HabitService {
         rewardGrantRepo.deleteByHabit(habit);
         checkRepo.deleteAllByHabit(habit);
         habitRepo.delete(habit);
+        broadcastHabitsChanged(userId);
     }
 
     // @Transactional omitted — see note on updateByType.
@@ -223,6 +240,7 @@ public class HabitService {
             rewardService.revokeCheck(user, habit, dateKey);
         }
 
+        broadcastHabitsChanged(userId);
         // Return the full check map for this habit so callers always have the real state
         return toHabitResponse(habit, checksFor(habit));
     }
