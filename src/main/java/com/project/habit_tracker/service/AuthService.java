@@ -173,8 +173,12 @@ public class AuthService {
         }
 
         // 4. Brand-new user — provision username + profile from email.
+        // Pass `isNewUser = true` so the client knows to surface the
+        // profile-setup screen (username + avatar pick) before landing
+        // on the dashboard. Subsequent Apple logins return `false`
+        // because step 1 above hits and we never reach step 4.
         User user = createAppleUser(email, emailHash, token.sub(), req.displayName());
-        return issueTokens(user);
+        return issueTokens(user, true);
     }
 
     /**
@@ -389,6 +393,10 @@ public class AuthService {
     }
 
     private AuthResponse issueTokens(User user) {
+        return issueTokens(user, false);
+    }
+
+    private AuthResponse issueTokens(User user, boolean isNewUser) {
         String accessToken  = jwtService.createAccessToken(user.getId(), user.getEmail());
         String refreshToken = jwtService.createRefreshToken(user.getId(), user.getEmail());
         long   accessExp    = jwtService.extractExpirationEpochSeconds(accessToken);
@@ -400,6 +408,6 @@ public class AuthService {
                 .expiresAt(Instant.ofEpochSecond(refreshExp))
                 .build());
 
-        return new AuthResponse(accessToken, refreshToken, accessExp);
+        return new AuthResponse(accessToken, refreshToken, accessExp, isNewUser);
     }
 }

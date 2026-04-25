@@ -1,5 +1,7 @@
 package com.project.habit_tracker.service;
 
+import com.project.habit_tracker.api.dto.MeResponse;
+import com.project.habit_tracker.api.dto.ProfileSetupRequest;
 import com.project.habit_tracker.api.dto.UserPreferencesResponse;
 import com.project.habit_tracker.entity.Habit;
 import com.project.habit_tracker.entity.HabitEntryType;
@@ -114,6 +116,68 @@ public class UserService {
         emailVerificationCodeRepo.deleteByEmail(email);
         profileRepo.deleteByUser(user);
         userRepo.delete(user);
+    }
+
+    /**
+     * Sets the user's public username + avatar after first-time Apple
+     * sign-in. Validates uniqueness server-side; clients see a 4xx with
+     * a recognizable message on collision so the setup screen can
+     * surface "username taken" inline.
+     *
+     * Idempotent — calling again on an already-set-up account just
+     * overwrites the chosen username/avatar (which is fine since this
+     * endpoint also serves as a "rename" path for users who decide they
+     * want a different handle later).
+     */
+    @Transactional
+    public MeResponse setupProfile(Long userId, ProfileSetupRequest req) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        UserProfile profile = profileRepo.findByUser(user)
+                .orElseThrow(() -> new IllegalArgumentException("User profile not found"));
+
+        String requestedUsername = req.username().trim();
+        // Allow no-op renames (same username) without tripping the
+        // uniqueness check — handy if the client re-submits on retry.
+        boolean unchanged = requestedUsername.equalsIgnoreCase(user.getUsername());
+        if (!unchanged && userRepo.existsByUsername(requestedUsername)) {
+            throw new IllegalArgumentException("Username already taken");
+        }
+        user.setUsername(requestedUsername);
+        userRepo.save(user);
+
+        // The display name on the profile is what shows up on leaderboards
+        // and friend cards. If it still matches the auto-generated
+        // username from createAppleUser, sync it to the user's chosen
+        // handle so they see their pick everywhere. Custom display names
+        // (e.g. "Real Name" set later) stay untouched.
+        if (profile.getDisplayName() == null
+                || profile.getDisplayName().equalsIgnoreCase(user.getUsername())) {
+            profile.setDisplayName(requestedUsername);
+        }
+
+        if (req.avatarUrl() != null && !req.avatarUrl().isBlank()) {
+            profile.setAvatarUrl(req.avatarUrl().trim());
+        }
+        profileRepo.save(profile);
+
+        return new MeResponse(user.getId(), user.getEmail(), user.getUsername());
+    }
+
+    /**
+     * Fast availability probe for the profile-setup screen. Returns true
+     * when the username is free OR already owned by the requesting user
+     * — i.e. "you can use this without collision."
+     */
+    @Transactional(readOnly = true)
+    public boolean isUsernameAvailable(Long userId, String username) {
+        String trimmed = username.trim();
+        if (trimmed.isEmpty()) return false;
+        User user = userRepo.findById(userId).orElse(null);
+        if (user != null && trimmed.equalsIgnoreCase(user.getUsername())) {
+            return true;
+        }
+        return !userRepo.existsByUsername(trimmed);
     }
 
     @Transactional(readOnly = true)

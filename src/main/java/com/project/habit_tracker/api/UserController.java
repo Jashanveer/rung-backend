@@ -1,5 +1,7 @@
 package com.project.habit_tracker.api;
 
+import com.project.habit_tracker.api.dto.MeResponse;
+import com.project.habit_tracker.api.dto.ProfileSetupRequest;
 import com.project.habit_tracker.api.dto.UserPreferencesRequest;
 import com.project.habit_tracker.api.dto.UserPreferencesResponse;
 import com.project.habit_tracker.security.JwtAuthFilter;
@@ -43,6 +45,35 @@ public class UserController {
             @Valid @RequestBody UserPreferencesRequest req
     ) {
         return ResponseEntity.ok(userService.updatePreferences(userId(auth), req.emailOptIn()));
+    }
+
+    /**
+     * One-time post-Apple-signup setup: the client submits the username
+     * + avatar the user picked on the profile-setup screen, the server
+     * persists them and returns the refreshed MeResponse so the client
+     * can update its local cache. Doubles as a "rename" endpoint after
+     * first use — calling again with a new username overwrites.
+     */
+    @PostMapping("/me/setup-profile")
+    public ResponseEntity<MeResponse> setupProfile(
+            Authentication auth,
+            @Valid @RequestBody ProfileSetupRequest req
+    ) {
+        return ResponseEntity.ok(userService.setupProfile(userId(auth), req));
+    }
+
+    /**
+     * Live availability probe for the setup-profile screen. Returns
+     * `{ "available": true | false }`. Currently-owned username always
+     * reads as available to the calling user.
+     */
+    @GetMapping("/me/username-available")
+    public ResponseEntity<Map<String, Boolean>> usernameAvailable(
+            Authentication auth,
+            @RequestParam("username") String username
+    ) {
+        boolean available = userService.isUsernameAvailable(userId(auth), username);
+        return ResponseEntity.ok(Map.of("available", available));
     }
 
     private Long userId(Authentication auth) {
