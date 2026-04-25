@@ -189,6 +189,9 @@ public class GeminiMentorAI implements MentorAI {
         String timingBlock = ctx.habitTimingSummary() == null || ctx.habitTimingSummary().isBlank()
                 ? "(not enough timestamped check-ins yet — do not guess specific times)"
                 : ctx.habitTimingSummary();
+        String weeklyTargetBlock = ctx.weeklyTargetSummary() == null || ctx.weeklyTargetSummary().isBlank()
+                ? "(no frequency-based habits)"
+                : ctx.weeklyTargetSummary();
         return """
                 MENTEE PROFILE
                 Display name: %s
@@ -204,6 +207,10 @@ public class GeminiMentorAI implements MentorAI {
                 Days of history tracked: %d
                 Habits done today: %d / %d
                 Missed today: %d
+                Verified score this week: %d (auto×10 + partial×5 + self×1)
+
+                WEEKLY-TARGET HABITS (N× per ISO week)
+                %s
 
                 HABIT TIMING (when they usually complete each habit)
                 %s
@@ -221,6 +228,8 @@ public class GeminiMentorAI implements MentorAI {
                 ctx.doneToday(),
                 Math.max(ctx.totalHabits(), ctx.doneToday()),
                 ctx.missedToday(),
+                ctx.verifiedScore(),
+                weeklyTargetBlock,
                 timingBlock
         );
     }

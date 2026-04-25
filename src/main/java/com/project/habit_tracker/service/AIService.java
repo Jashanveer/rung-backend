@@ -26,7 +26,11 @@ public class AIService implements MentorAI {
 
     private static final Logger log = LoggerFactory.getLogger(AIService.class);
     private static final String API_URL = "https://api.anthropic.com/v1/messages";
-    private static final String MODEL   = "claude-haiku-4-5-20251001";
+    // Sonnet 4.6 for mentor replies — noticeably better at staying in
+    // personality, weaving in numbers, and avoiding "Great job!" filler
+    // than the prior Haiku. The chat volume is low enough that the
+    // price bump per mentor turn is negligible.
+    private static final String MODEL   = "claude-sonnet-4-6";
 
     private final RestTemplate restTemplate;
 
@@ -245,6 +249,9 @@ public class AIService implements MentorAI {
         String timingBlock = ctx.habitTimingSummary() == null || ctx.habitTimingSummary().isBlank()
                 ? "(not enough timestamped check-ins yet — do not guess specific times)"
                 : ctx.habitTimingSummary();
+        String weeklyTargetBlock = ctx.weeklyTargetSummary() == null || ctx.weeklyTargetSummary().isBlank()
+                ? "(no frequency-based habits)"
+                : ctx.weeklyTargetSummary();
         return """
                 MENTEE PROFILE
                 Display name: %s
@@ -260,6 +267,10 @@ public class AIService implements MentorAI {
                 Days of history tracked: %d
                 Habits done today: %d / %d
                 Missed today: %d
+                Verified score this week: %d (auto×10 + partial×5 + self×1)
+
+                WEEKLY-TARGET HABITS (N× per ISO week)
+                %s
 
                 HABIT TIMING (when they usually complete each habit)
                 %s
@@ -277,6 +288,8 @@ public class AIService implements MentorAI {
                 ctx.doneToday(),
                 Math.max(ctx.totalHabits(), ctx.doneToday()),
                 ctx.missedToday(),
+                ctx.verifiedScore(),
+                weeklyTargetBlock,
                 timingBlock
         );
     }

@@ -710,9 +710,8 @@ public class AccountabilityService {
 
     private MentorAI.MentorContext buildMentorContext(User mentee, UserProfile menteeProfile) {
         UserStats stats = statsFor(mentee);
-        List<String> habitNames = habitRepo.findAllByUserAndEntryType(mentee, HabitEntryType.HABIT).stream()
-                .map(Habit::getTitle)
-                .toList();
+        List<Habit> habits = habitRepo.findAllByUserAndEntryType(mentee, HabitEntryType.HABIT);
+        List<String> habitNames = habits.stream().map(Habit::getTitle).toList();
         return new MentorAI.MentorContext(
                 menteeProfile.getDisplayName(),
                 menteeProfile.getTimezone(),
@@ -726,8 +725,44 @@ public class AccountabilityService {
                 stats.historyDays(),
                 stats.doneToday(),
                 stats.missedToday(),
-                buildHabitTimingSummary(mentee)
+                buildHabitTimingSummary(mentee),
+                stats.verifiedScore(),
+                buildWeeklyTargetSummary(habits)
         );
+    }
+
+    /// Builds the weekly-target progress block surfaced to the AI mentor
+    /// so it can call out specific frequency-habit shortfalls ("Gym: 2/5
+    /// this week, 2 rest days already used — Sunday is the last shot").
+    /// Empty string when the user has no frequency-based habits.
+    private String buildWeeklyTargetSummary(List<Habit> habits) {
+        List<Habit> frequency = habits.stream()
+                .filter(h -> h.getWeeklyTarget() != null && h.getWeeklyTarget() > 0)
+                .toList();
+        if (frequency.isEmpty()) return "";
+
+        Set<String> weekKeys = isoWeekDateKeys(LocalDate.now());
+        List<HabitCheck> checks = checkRepo.findAllByHabitIn(frequency);
+        Map<Long, Integer> completionsByHabit = new HashMap<>();
+        for (HabitCheck c : checks) {
+            if (!c.isDone()) continue;
+            if (!weekKeys.contains(c.getDateKey())) continue;
+            completionsByHabit.merge(c.getHabit().getId(), 1, Integer::sum);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Habit h : frequency) {
+            int done = completionsByHabit.getOrDefault(h.getId(), 0);
+            int target = h.getWeeklyTarget();
+            sb.append("- ")
+              .append(h.getTitle())
+              .append(": ")
+              .append(done)
+              .append("/")
+              .append(target)
+              .append(" this week\n");
+        }
+        return sb.toString().trim();
     }
 
     /// One-per-line habit timing description feeding the AI mentor prompt, so

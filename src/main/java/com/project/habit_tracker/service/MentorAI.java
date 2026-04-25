@@ -75,7 +75,11 @@ public interface MentorAI {
 
     /// Snapshot of mentee state passed into every prompt. `habitTimingSummary`
     /// is a pre-formatted one-per-line breakdown of when each habit is
-    /// typically completed.
+    /// typically completed. `weeklyTargetSummary` lists frequency-based
+    /// habits with their current week progress (e.g. "Gym: 2/5 this week")
+    /// so the mentor can reference the specific shortfall. `verifiedScore`
+    /// is the tier-weighted anti-cheat number — an indirect signal of how
+    /// much of the user's consistency is genuinely HealthKit-verified.
     record MentorContext(
             String displayName,
             String timezone,
@@ -89,7 +93,9 @@ public interface MentorAI {
             int historyDays,
             int doneToday,
             int missedToday,
-            String habitTimingSummary
+            String habitTimingSummary,
+            int verifiedScore,
+            String weeklyTargetSummary
     ) {}
 
     /// One turn in the mentor-chat history. `role` is "user" (mentee) or
