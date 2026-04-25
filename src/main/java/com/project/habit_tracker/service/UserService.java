@@ -136,10 +136,11 @@ public class UserService {
         UserProfile profile = profileRepo.findByUser(user)
                 .orElseThrow(() -> new IllegalArgumentException("User profile not found"));
 
+        String previousUsername = user.getUsername();
         String requestedUsername = req.username().trim();
         // Allow no-op renames (same username) without tripping the
         // uniqueness check — handy if the client re-submits on retry.
-        boolean unchanged = requestedUsername.equalsIgnoreCase(user.getUsername());
+        boolean unchanged = requestedUsername.equalsIgnoreCase(previousUsername);
         if (!unchanged && userRepo.existsByUsername(requestedUsername)) {
             throw new IllegalArgumentException("Username already taken");
         }
@@ -148,11 +149,17 @@ public class UserService {
 
         // The display name on the profile is what shows up on leaderboards
         // and friend cards. If it still matches the auto-generated
-        // username from createAppleUser, sync it to the user's chosen
-        // handle so they see their pick everywhere. Custom display names
-        // (e.g. "Real Name" set later) stay untouched.
-        if (profile.getDisplayName() == null
-                || profile.getDisplayName().equalsIgnoreCase(user.getUsername())) {
+        // username from createAppleUser (i.e. the *previous* username),
+        // sync it to the user's chosen handle so they see their pick
+        // everywhere. Custom display names (e.g. a real name set later
+        // via the profile API) stay untouched. Compare against the OLD
+        // username here — comparing against the just-saved new one would
+        // never match on actual renames and the displayName would stay
+        // stale forever.
+        String currentDisplay = profile.getDisplayName();
+        if (currentDisplay == null
+                || currentDisplay.isBlank()
+                || currentDisplay.equalsIgnoreCase(previousUsername)) {
             profile.setDisplayName(requestedUsername);
         }
 
