@@ -38,6 +38,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/accountability/**").authenticated()
                         .requestMatchers("/api/devices/**").authenticated()
                         .requestMatchers("/api/users/**").authenticated()
+                        .requestMatchers("/api/me/**").authenticated()
                         .requestMatchers("/api/me").authenticated()
                         .anyRequest().denyAll()
                 )

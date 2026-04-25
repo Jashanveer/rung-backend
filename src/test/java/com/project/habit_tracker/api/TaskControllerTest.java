@@ -33,7 +33,10 @@ class TaskControllerTest {
         private Long deletedTaskId;
 
         private TestHabitService() {
-            super(null, null, null, null, null);
+            // Extra null matches the new AccountabilityStreamService
+            // dependency added for cross-device real-time sync; the
+            // test only exercises deleteTask which doesn't touch it.
+            super(null, null, null, null, null, null);
         }
 
         @Override

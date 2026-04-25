@@ -16,6 +16,8 @@ import com.project.habit_tracker.repository.RewardGrantRepository;
 import com.project.habit_tracker.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -50,9 +52,30 @@ public class HabitService {
     /// the next 5-minute timer tick. The event payload is intentionally
     /// minimal; reconciliation logic on the client already handles the
     /// data fetch.
+    ///
+    /// Defers to the transaction's `afterCommit` phase when one is
+    /// active (which is every write path — public methods are
+    /// `@Transactional`). That's critical: broadcasting mid-transaction
+    /// would let subscribers sync against a pre-commit state that could
+    /// still roll back, causing a "flash of stale data" until the next
+    /// write. Deferring guarantees subscribers only ever fetch committed
+    /// rows. Falls back to immediate broadcast if somehow called outside
+    /// a transaction.
     private void broadcastHabitsChanged(Long userId) {
-        streamService.publishToUser(userId, "habits.changed",
-                Map.of("at", Instant.now().toString()));
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            streamService.publishToUser(userId, "habits.changed",
+                                    Map.of("at", Instant.now().toString()));
+                        }
+                    }
+            );
+        } else {
+            streamService.publishToUser(userId, "habits.changed",
+                    Map.of("at", Instant.now().toString()));
+        }
     }
 
     private User requireUser(Long userId) {

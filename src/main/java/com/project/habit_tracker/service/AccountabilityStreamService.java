@@ -15,7 +15,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class AccountabilityStreamService {
-    private static final long EMITTER_TIMEOUT_MS = 0L;
+    // Finite timeout so dropped mobile connections get reaped instead of
+    // accumulating dead emitters forever. Clients already re-connect
+    // with exponential backoff, so a 30-minute cap is a safe trade-off
+    // between reconnect churn and leaked emitter count.
+    private static final long EMITTER_TIMEOUT_MS = 30L * 60L * 1000L;
     private static final int MAX_EVENT_HISTORY = 200;
     private static final long HEARTBEAT_SECONDS = 15;
 
