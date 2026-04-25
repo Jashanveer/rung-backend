@@ -239,8 +239,7 @@ public class HabitService {
         // 1. Rate-limit guard — throws HTTP 429 if exceeded
         rewardService.checkRateLimit(userId);
 
-        HabitCheck hc = checkRepo.findByHabitAndDateKey(habit, dateKey)
-                .orElseGet(() -> HabitCheck.builder().habit(habit).dateKey(dateKey).done(false).build());
+        HabitCheck hc = loadOrCreateCheck(habit, dateKey);
 
         boolean wasAlreadyDone = hc.isDone();
         hc.setDone(done);
@@ -254,7 +253,28 @@ public class HabitService {
         } else {
             hc.setCompletedAt(null);
         }
-        checkRepo.save(hc);
+        try {
+            checkRepo.save(hc);
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            // Concurrent setCheck for the same (habit, dateKey) — common
+            // when a user toggles on iPhone and macOS within milliseconds,
+            // or when flushOutbox replays a check that another device
+            // already wrote. The unique constraint
+            // `uk(habit_id, date_key)` rejects the second insert; fetch
+            // the row that won and re-apply the intended state on top.
+            HabitCheck existing = checkRepo.findByHabitAndDateKey(habit, dateKey)
+                    .orElseThrow(() -> race);
+            existing.setDone(done);
+            if (done) {
+                existing.setCompletedAt(Instant.now());
+                if (verificationTier != null) existing.setVerificationTier(verificationTier);
+                if (verificationSource != null) existing.setVerificationSource(verificationSource);
+            } else {
+                existing.setCompletedAt(null);
+            }
+            checkRepo.save(existing);
+            hc = existing;
+        }
 
         // 2. Grant or revoke reward (idempotent; respects daily cap)
         if (done && !wasAlreadyDone) {
@@ -287,6 +307,20 @@ public class HabitService {
             if (c.isDone()) map.put(c.getDateKey(), true);
         }
         return map;
+    }
+
+    /// Pulls the existing HabitCheck for (habit, dateKey) or builds a
+    /// new one in-memory. Race-handling lives in the caller — two
+    /// concurrent threads can both reach the `else` branch and produce
+    /// independent transient HabitChecks; the unique-constraint catch
+    /// in setCheckByType covers the second writer.
+    private HabitCheck loadOrCreateCheck(Habit habit, String dateKey) {
+        return checkRepo.findByHabitAndDateKey(habit, dateKey)
+                .orElseGet(() -> HabitCheck.builder()
+                        .habit(habit)
+                        .dateKey(dateKey)
+                        .done(false)
+                        .build());
     }
 
     private HabitResponse toHabitResponse(Habit habit, Map<String, Boolean> checksByDate) {
