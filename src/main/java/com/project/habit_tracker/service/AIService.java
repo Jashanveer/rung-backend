@@ -13,29 +13,37 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Anthropic (Claude) implementation of {@link MentorAI}. Kept alive as a
- * fallback behind {@code mentor.provider=anthropic}; the default provider
- * is Gemini (see {@link GeminiMentorAI}).
+ * Anthropic (Claude) implementation of {@link MentorAI}. Default and only
+ * production provider. The Gemini path remains in the codebase as a
+ * cold-swap escape hatch, but {@code mentor.provider=anthropic} (set in
+ * application.properties) routes every mentor call through here.
  *
  * Uses RestTemplate directly — no Anthropic SDK dependency. Mentor system
  * prompts are built as a list with `cache_control` so the per-mentee
  * profile prefix is reused across turns inside the 5-minute TTL.
+ *
+ * Model is env-configurable so the user can swap up to Sonnet 4.6 if the
+ * default Haiku 4.5 ever drifts off persona — without a code change.
  */
 @Service
 public class AIService implements MentorAI {
 
     private static final Logger log = LoggerFactory.getLogger(AIService.class);
     private static final String API_URL = "https://api.anthropic.com/v1/messages";
-    // Sonnet 4.6 for mentor replies — noticeably better at staying in
-    // personality, weaving in numbers, and avoiding "Great job!" filler
-    // than the prior Haiku. The chat volume is low enough that the
-    // price bump per mentor turn is negligible.
-    private static final String MODEL   = "claude-sonnet-4-6";
 
     private final RestTemplate restTemplate;
 
     @Value("${anthropic.api-key:}")
     private String apiKey;
+
+    // Default Haiku 4.5 — cheapest current Claude, dramatically better than
+    // prior Haiku generations at holding a persona on short outputs. With
+    // ~1.5K input + 200 output tokens per mentor turn this is roughly
+    // $0.0025/turn — about 2000 turns per $5 of credit. Override with
+    // ANTHROPIC_MODEL=claude-sonnet-4-6 in .env if persona quality matters
+    // more than cost on a given account.
+    @Value("${anthropic.model:claude-haiku-4-5-20251001}")
+    private String model;
 
     public AIService(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
@@ -58,7 +66,7 @@ public class AIService implements MentorAI {
         String prompt = buildWeeklyPrompt(displayName, consistencyPct, perfectDays, bestStreak, totalHabits, habitNames, personality);
 
         Map<String, Object> body = Map.of(
-                "model", MODEL,
+                "model", model,
                 "max_tokens", 220,
                 "messages", List.of(Map.of("role", "user", "content", prompt))
         );
@@ -71,7 +79,7 @@ public class AIService implements MentorAI {
         if (!isConfigured()) return "";
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", MODEL);
+        body.put("model", model);
         body.put("max_tokens", 220);
         body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", List.of(
@@ -96,7 +104,7 @@ public class AIService implements MentorAI {
         messages.add(Map.of("role", "user", "content", latestMenteeMessage));
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", MODEL);
+        body.put("model", model);
         body.put("max_tokens", 280);
         body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", messages);
@@ -109,7 +117,7 @@ public class AIService implements MentorAI {
         if (!isConfigured()) return "";
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", MODEL);
+        body.put("model", model);
         body.put("max_tokens", 220);
         body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", List.of(
@@ -139,7 +147,7 @@ public class AIService implements MentorAI {
                 );
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", MODEL);
+        body.put("model", model);
         body.put("max_tokens", 200);
         body.put("system", buildMentorSystemBlocks(ctx, personality, memory));
         body.put("messages", List.of(Map.of("role", "user", "content", userPrompt)));
@@ -171,7 +179,7 @@ public class AIService implements MentorAI {
                 """.formatted(prev, transcript.toString().strip());
 
         Map<String, Object> body = Map.of(
-                "model", MODEL,
+                "model", model,
                 "max_tokens", 220,
                 "messages", List.of(Map.of("role", "user", "content", prompt))
         );

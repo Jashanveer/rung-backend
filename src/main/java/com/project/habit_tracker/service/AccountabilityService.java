@@ -60,6 +60,7 @@ public class AccountabilityService {
     private final MentorAI mentorAI;
     private final PersonalityRotator personalityRotator;
     private final ApplicationEventPublisher eventPublisher;
+    private final AiMentorRateLimiter aiMentorRateLimiter;
 
     public AccountabilityService(
             UserRepository userRepo,
@@ -78,7 +79,8 @@ public class AccountabilityService {
             EmailService emailService,
             MentorAI mentorAI,
             PersonalityRotator personalityRotator,
-            ApplicationEventPublisher eventPublisher
+            ApplicationEventPublisher eventPublisher,
+            AiMentorRateLimiter aiMentorRateLimiter
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -97,6 +99,7 @@ public class AccountabilityService {
         this.mentorAI = mentorAI;
         this.personalityRotator = personalityRotator;
         this.eventPublisher = eventPublisher;
+        this.aiMentorRateLimiter = aiMentorRateLimiter;
     }
 
     @Transactional
@@ -639,6 +642,11 @@ public class AccountabilityService {
         }
 
         if (match.isAiMentor() && sender.getId().equals(match.getMentee().getId())) {
+            // Gate the AI call BEFORE publishing the event so a runaway client
+            // can't queue thousands of pending Anthropic round-trips by
+            // looping POSTs faster than the listener can drain them. Throws
+            // 429 if the per-user hourly budget is exhausted.
+            aiMentorRateLimiter.checkAiBudget(userId);
             eventPublisher.publishEvent(new MenteeMessageReceivedEvent(match.getId(), text));
         }
 
@@ -852,7 +860,13 @@ public class AccountabilityService {
         );
     }
 
-    @Transactional(readOnly = true)
+    /// No {@code @Transactional} — the SSE emitter is held open for up to
+    /// 30 minutes by AccountabilityStreamService, and a tx around it would
+    /// pin a HikariCP connection for the full lifetime of the stream.
+    /// With even a handful of connected devices the pool is exhausted and
+    /// every other DB-bound request stalls on connection-timeout. The two
+    /// repository lookups we do here are short reads — Hibernate auto-commit
+    /// at the JDBC layer is fine.
     public SseEmitter streamMatch(Long userId, Long matchId, String lastEventId) {
         User user = requireUser(userId);
         MentorMatch match = requireMatchParticipant(matchId, user);

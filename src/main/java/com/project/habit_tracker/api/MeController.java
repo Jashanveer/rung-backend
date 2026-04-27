@@ -32,8 +32,11 @@ public class MeController {
     /// sync pass — payload is intentionally tiny because reconciliation
     /// already handles the data fetch.
     @GetMapping(value = "/me/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamUser(Authentication auth) {
+    public SseEmitter streamUser(
+            Authentication auth,
+            @RequestParam(value = "platform", required = false) String platform
+    ) {
         Long userId = ((JwtAuthFilter.AuthPrincipal) auth.getPrincipal()).userId();
-        return streamService.subscribeUser(userId);
+        return streamService.subscribeUser(userId, platform);
     }
 }

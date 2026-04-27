@@ -3,6 +3,7 @@ package com.project.habit_tracker.security;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.repository.UserRepository;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -52,8 +53,24 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 var authentication = new UsernamePasswordAuthenticationToken(principal, null, Collections.emptyList());
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
+        } catch (ExpiredJwtException expired) {
+            // Distinguish "expired but otherwise valid" from "tampered /
+            // malformed" so the iOS/macOS client can branch:
+            //   - expired → trigger refresh-token flow
+            //   - invalid → drop session, force re-sign-in
+            // Without this header both cases looked like a generic 401 and
+            // the client had no signal to choose between them.
+            response.setHeader(
+                "WWW-Authenticate",
+                "Bearer error=\"invalid_token\", error_description=\"expired\""
+            );
+            // Fall through unauthenticated; SecurityConfig returns the 401.
         } catch (Exception ignored) {
-            // Invalid token => proceed unauthenticated
+            response.setHeader(
+                "WWW-Authenticate",
+                "Bearer error=\"invalid_token\", error_description=\"malformed\""
+            );
+            // Fall through unauthenticated.
         }
 
         chain.doFilter(request, response);

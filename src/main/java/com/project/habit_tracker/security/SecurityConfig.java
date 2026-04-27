@@ -20,8 +20,11 @@ import java.util.stream.Collectors;
 @Configuration
 public class SecurityConfig {
 
-    @Value("${app.cors.allowedOrigins:http://localhost:5173}")
+    @Value("${app.cors.allowedOrigins:}")
     private String allowedOrigins;
+
+    @Value("${spring.profiles.active:local}")
+    private String activeProfile;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http, JwtAuthFilter jwtAuthFilter) throws Exception {
@@ -32,6 +35,12 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        // Spring Boot's BasicErrorController is mapped at /error;
+                        // it must be permit-all so the JSON error body renders
+                        // instead of being swallowed by `denyAll`.
+                        .requestMatchers("/error").permitAll()
+                        // Actuator health for load-balancer probes.
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/api/habits/**").authenticated()
                         .requestMatchers("/api/tasks/**").authenticated()
@@ -53,10 +62,38 @@ public class SecurityConfig {
                 .filter(s -> !s.isBlank())
                 .collect(Collectors.toList());
 
+        // Fail-fast in non-local profiles if the deployer forgot to set
+        // CORS_ALLOWED_ORIGINS — combined with allowCredentials(true), an
+        // empty origin list silently falls back to the dev default which
+        // would let any localhost browser hit the prod API with cookies.
+        boolean isLocalProfile = activeProfile == null
+                || activeProfile.isBlank()
+                || activeProfile.equalsIgnoreCase("local")
+                || activeProfile.equalsIgnoreCase("test");
+        if (origins.isEmpty()) {
+            if (!isLocalProfile) {
+                throw new IllegalStateException(
+                    "CORS_ALLOWED_ORIGINS must be set explicitly in profile=" + activeProfile +
+                    ". Refusing to start with credential-allowing CORS and an empty origin list."
+                );
+            }
+            // Dev convenience only.
+            origins = List.of("http://localhost:3000", "http://localhost:5173");
+        }
+
         CorsConfiguration cfg = new CorsConfiguration();
         cfg.setAllowedOrigins(origins);
         cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        cfg.setAllowedHeaders(List.of("*")); // easiest for now
+        // Explicit allowlist instead of "*" — required when allowCredentials
+        // is true (browsers reject the wildcard with credentials anyway) and
+        // narrows the surface against header-injection-based CSRF variants.
+        cfg.setAllowedHeaders(List.of(
+                "Authorization",
+                "Content-Type",
+                "Accept",
+                "Last-Event-ID",
+                "X-Requested-With"
+        ));
         cfg.setExposedHeaders(List.of("Authorization"));
         cfg.setAllowCredentials(true);
 

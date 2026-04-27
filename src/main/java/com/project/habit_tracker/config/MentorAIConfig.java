@@ -14,8 +14,8 @@ import org.springframework.context.annotation.Primary;
  * Picks which {@link MentorAI} implementation is injected into callers that
  * depend on the interface — driven by the `mentor.provider` property.
  *
- *   mentor.provider=gemini    → GeminiMentorAI (default)
- *   mentor.provider=anthropic → AIService (legacy Claude path)
+ *   mentor.provider=anthropic → AIService (default — Claude Haiku 4.5)
+ *   mentor.provider=gemini    → GeminiMentorAI (cold-swap escape hatch)
  *
  * Both service beans are always instantiated so the app can switch providers
  * at runtime by flipping the property and restarting — no recompile.
@@ -28,14 +28,14 @@ public class MentorAIConfig {
     @Bean
     @Primary
     public MentorAI mentorAI(
-            @Value("${mentor.provider:gemini}") String provider,
+            @Value("${mentor.provider:anthropic}") String provider,
             AIService anthropicService,
             GeminiMentorAI geminiService
     ) {
-        boolean useAnthropic = "anthropic".equalsIgnoreCase(provider);
-        MentorAI chosen = useAnthropic ? anthropicService : geminiService;
+        boolean useGemini = "gemini".equalsIgnoreCase(provider);
+        MentorAI chosen = useGemini ? geminiService : anthropicService;
         log.info("MentorAI provider = {} (configured={})",
-                useAnthropic ? "anthropic" : "gemini",
+                useGemini ? "gemini" : "anthropic",
                 chosen.isConfigured());
         return chosen;
     }

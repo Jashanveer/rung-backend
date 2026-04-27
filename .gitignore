@@ -39,3 +39,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local tooling ###
+.mcp.json
+graphify-out/

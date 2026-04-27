@@ -9,15 +9,27 @@ import com.project.habit_tracker.entity.HabitCheck;
 import com.project.habit_tracker.entity.User;
 import com.project.habit_tracker.entity.UserProfile;
 import com.project.habit_tracker.repository.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class UserService {
+
+    private static final Logger log = LoggerFactory.getLogger(UserService.class);
+    /// Avatar URLs are stored verbatim and rendered on every dashboard /
+    /// leaderboard / friend card any other user sees, so an attacker who can
+    /// land a self-controlled URL here gets a stored XSS / tracking-pixel
+    /// vector against everyone in their social graph. Mirror AuthService's
+    /// allowlist: avatars must come from our DiceBear endpoint.
+    private static final String AVATAR_BASE_URL = "https://api.dicebear.com/9.x/adventurer/png?seed=";
 
     private final UserRepository userRepo;
     private final UserProfileRepository profileRepo;
@@ -34,6 +46,7 @@ public class UserService {
     private final SocialPostRepository socialPostRepo;
     private final EmailVerificationCodeRepository emailVerificationCodeRepo;
     private final EmailService emailService;
+    private final AccountabilityStreamService streamService;
 
     public UserService(
             UserRepository userRepo,
@@ -50,7 +63,8 @@ public class UserService {
             MentorshipMessageRepository mentorshipMessageRepo,
             SocialPostRepository socialPostRepo,
             EmailVerificationCodeRepository emailVerificationCodeRepo,
-            EmailService emailService
+            EmailService emailService,
+            AccountabilityStreamService streamService
     ) {
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -67,6 +81,29 @@ public class UserService {
         this.socialPostRepo = socialPostRepo;
         this.emailVerificationCodeRepo = emailVerificationCodeRepo;
         this.emailService = emailService;
+        this.streamService = streamService;
+    }
+
+    /// Mirror of HabitService.broadcastHabitsChanged but for non-habit
+    /// data (preferences, profile name/avatar). Emits a `prefs.changed`
+    /// SSE event after the transaction commits so other devices the
+    /// same user has open can refresh their settings + dashboard cache
+    /// without waiting for the polling tick.
+    private void broadcastPrefsChanged(Long userId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            streamService.publishToUser(userId, "prefs.changed",
+                                    Map.of("at", Instant.now().toString()));
+                        }
+                    }
+            );
+        } else {
+            streamService.publishToUser(userId, "prefs.changed",
+                    Map.of("at", Instant.now().toString()));
+        }
     }
 
     @Transactional
@@ -87,14 +124,27 @@ public class UserService {
                         c -> c.getHabit().getId(), java.util.stream.Collectors.counting()))
                 .values().stream().mapToLong(Long::longValue).max().orElse(0L);
 
-        String displayName = user.getUsername() != null ? user.getUsername() : user.getEmail();
+        String username = user.getUsername();
+        String displayName = username != null ? username : user.getEmail();
         String email = user.getEmail();
+
+        log.info("deleteAccount start userId={} username={} habits={} entries={}",
+                userId, username, totalHabits, allEntries.size());
 
         // Only send farewell once the transaction has committed successfully.
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                log.info("deleteAccount committed userId={} username={} — username freed", userId, username);
                 emailService.sendAccountDeleted(email, displayName, totalHabits, bestStreak, totalDaysTracked);
+            }
+
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    log.error("deleteAccount transaction did NOT commit userId={} username={} status={} — row + username remain in DB; check upstream FK constraints",
+                            userId, username, status);
+                }
             }
         });
 
@@ -116,6 +166,14 @@ public class UserService {
         emailVerificationCodeRepo.deleteByEmail(email);
         profileRepo.deleteByUser(user);
         userRepo.delete(user);
+        // Force the DELETEs to flush to the DB inside the transaction so any
+        // FK violation surfaces here (and rolls the whole thing back) rather
+        // than at commit time, where the only signal would be a silent
+        // afterCompletion(rollback). With explicit flush, the controller sees
+        // a 409 from GlobalExceptionHandler.handleDataIntegrity and the
+        // client surfaces a real error instead of a fake "deleted" toast.
+        userRepo.flush();
+        log.info("deleteAccount flushed userId={} username={} — pending commit", userId, username);
     }
 
     /**
@@ -147,27 +205,51 @@ public class UserService {
         user.setUsername(requestedUsername);
         userRepo.save(user);
 
-        // The display name on the profile is what shows up on leaderboards
-        // and friend cards. If it still matches the auto-generated
-        // username from createAppleUser (i.e. the *previous* username),
-        // sync it to the user's chosen handle so they see their pick
-        // everywhere. Custom display names (e.g. a real name set later
-        // via the profile API) stay untouched. Compare against the OLD
-        // username here — comparing against the just-saved new one would
-        // never match on actual renames and the displayName would stay
-        // stale forever.
+        // The display name on the profile is what shows up on
+        // leaderboards and friend cards. Three layered rules, in
+        // priority order:
+        //
+        //  1. If the client supplied a `displayName`, that always wins —
+        //     this is the post-Apple-signup path where the user typed
+        //     their real name on the setup screen because Apple didn't
+        //     return one (private-relay sign-ins drop fullName after
+        //     the first authorization, so the previous behaviour left
+        //     them stuck with the random hash username as their public
+        //     name).
+        //
+        //  2. Otherwise, if the existing display name still matches the
+        //     auto-generated username from createAppleUser (i.e. the
+        //     *previous* username), sync it to the user's chosen
+        //     handle so they see their pick everywhere. Compare
+        //     against the OLD username — the new one would never match
+        //     on actual renames and the displayName would stay stale
+        //     forever.
+        //
+        //  3. Otherwise leave the existing display name untouched
+        //     (custom name set earlier).
+        String requestedDisplay = req.displayName() == null ? null : req.displayName().trim();
         String currentDisplay = profile.getDisplayName();
-        if (currentDisplay == null
+        if (requestedDisplay != null && !requestedDisplay.isEmpty()) {
+            profile.setDisplayName(requestedDisplay);
+        } else if (currentDisplay == null
                 || currentDisplay.isBlank()
                 || currentDisplay.equalsIgnoreCase(previousUsername)) {
             profile.setDisplayName(requestedUsername);
         }
 
         if (req.avatarUrl() != null && !req.avatarUrl().isBlank()) {
-            profile.setAvatarUrl(req.avatarUrl().trim());
+            String trimmedAvatar = req.avatarUrl().trim();
+            // Reject avatars that aren't a DiceBear URL we generate. Without
+            // this check, a fresh Apple sign-up could POST any URL here and
+            // it would render on every other user who sees them in social.
+            if (!trimmedAvatar.startsWith(AVATAR_BASE_URL)) {
+                throw new IllegalArgumentException("Choose one of the predefined avatars");
+            }
+            profile.setAvatarUrl(trimmedAvatar);
         }
         profileRepo.save(profile);
 
+        broadcastPrefsChanged(userId);
         return new MeResponse(user.getId(), user.getEmail(), user.getUsername());
     }
 
@@ -198,6 +280,7 @@ public class UserService {
         UserProfile profile = requireProfile(userId);
         profile.setEmailOptIn(emailOptIn);
         profileRepo.save(profile);
+        broadcastPrefsChanged(userId);
         return new UserPreferencesResponse(profile.isEmailOptIn());
     }
 
