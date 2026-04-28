@@ -113,6 +113,12 @@ public class AuthService {
                 .email(email)
                 .emailHash(encConverter.hash(email))
                 .passwordHash(encoder.encode(req.password()))
+                // Password sign-ups pick their own username inline, so they
+                // skip the AppleProfileSetupView entirely — mark setup
+                // complete at creation. Apple sign-ups (createAppleUser)
+                // intentionally leave this false; UserService.setupProfile
+                // flips it once the user submits the setup form.
+                .profileSetupCompleted(true)
                 .build();
         userRepo.save(user);
 

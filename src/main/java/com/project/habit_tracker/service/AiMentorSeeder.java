@@ -55,6 +55,10 @@ public class AiMentorSeeder {
                             // Sentinel hash that never matches BCrypt output, so the account
                             // cannot be logged into.
                             .passwordHash("!!AI_MENTOR_NO_LOGIN!!")
+                            // System bot — not a real user; treat setup as
+                            // done so it never trips a
+                            // SUM(profile_setup_completed=false) dashboard.
+                            .profileSetupCompleted(true)
                             .build());
                     log.info("Seeded AI mentor user id={}", created.getId());
                     return created;

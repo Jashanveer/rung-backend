@@ -17,7 +17,7 @@ class TaskControllerTest {
     void deleteReturnsJsonObjectForClientsThatDecodeEmptyResponses() {
         TestHabitService habitService = new TestHabitService();
         TaskController controller = new TaskController(habitService);
-        var principal = new JwtAuthFilter.AuthPrincipal(7L, "user@example.com", "user");
+        var principal = new JwtAuthFilter.AuthPrincipal(7L, "user@example.com", "user", true);
         var authentication = new UsernamePasswordAuthenticationToken(principal, null, Collections.emptyList());
 
         var response = controller.delete(authentication, 42L);

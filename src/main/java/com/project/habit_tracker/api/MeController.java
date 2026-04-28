@@ -22,7 +22,7 @@ public class MeController {
     @GetMapping("/me")
     public ResponseEntity<MeResponse> me(Authentication auth) {
         JwtAuthFilter.AuthPrincipal principal = (JwtAuthFilter.AuthPrincipal) auth.getPrincipal();
-        return ResponseEntity.ok(new MeResponse(principal.userId(), principal.email(), principal.username()));
+        return ResponseEntity.ok(new MeResponse(principal.userId(), principal.email(), principal.username(), principal.profileSetupCompleted()));
     }
 
     /// Per-user SSE channel for cross-device live sync. Clients subscribe

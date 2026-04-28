@@ -203,6 +203,10 @@ public class UserService {
             throw new IllegalArgumentException("Username already taken");
         }
         user.setUsername(requestedUsername);
+        // Mark setup as completed — this is the only path that flips the
+        // flag for Apple sign-ups, so cold-launching after this point will
+        // skip the AppleProfileSetupView overlay (V15 column).
+        user.setProfileSetupCompleted(true);
         userRepo.save(user);
 
         // The display name on the profile is what shows up on
@@ -250,7 +254,7 @@ public class UserService {
         profileRepo.save(profile);
 
         broadcastPrefsChanged(userId);
-        return new MeResponse(user.getId(), user.getEmail(), user.getUsername());
+        return new MeResponse(user.getId(), user.getEmail(), user.getUsername(), user.isProfileSetupCompleted());
     }
 
     /**

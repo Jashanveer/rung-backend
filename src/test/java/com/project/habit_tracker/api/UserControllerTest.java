@@ -17,7 +17,7 @@ class UserControllerTest {
     void deleteAccountRoutesToServiceWithAuthenticatedUserId() {
         TestUserService userService = new TestUserService();
         UserController controller = new UserController(userService);
-        var principal = new JwtAuthFilter.AuthPrincipal(11L, "user@example.com", "user");
+        var principal = new JwtAuthFilter.AuthPrincipal(11L, "user@example.com", "user", true);
         var authentication = new UsernamePasswordAuthenticationToken(principal, null, Collections.emptyList());
 
         var response = controller.deleteAccount(authentication);

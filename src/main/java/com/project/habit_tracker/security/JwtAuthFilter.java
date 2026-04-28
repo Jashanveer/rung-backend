@@ -49,7 +49,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             User user = userRepo.findById(userId).orElse(null);
             if (user != null) {
-                var principal = new AuthPrincipal(user.getId(), user.getEmail(), user.getUsername());
+                var principal = new AuthPrincipal(user.getId(), user.getEmail(), user.getUsername(), user.isProfileSetupCompleted());
                 var authentication = new UsernamePasswordAuthenticationToken(principal, null, Collections.emptyList());
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
@@ -76,6 +76,6 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         chain.doFilter(request, response);
     }
 
-    public record AuthPrincipal(Long userId, String email, String username) {
+    public record AuthPrincipal(Long userId, String email, String username, boolean profileSetupCompleted) {
     }
 }

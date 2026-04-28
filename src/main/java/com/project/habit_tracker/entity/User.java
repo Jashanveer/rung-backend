@@ -41,4 +41,14 @@ public class User {
     /// password-only accounts. Unique-indexed at the DB level (V14).
     @Column(name = "apple_sub", length = 255)
     private String appleSub;
+
+    /// True once the user has successfully POSTed `/api/users/me/setup-profile`.
+    /// False for fresh Apple sign-ups whose row was provisioned with an
+    /// auto-generated placeholder username (see `AuthService.createAppleUser`)
+    /// — the client reads this on cold launch and re-shows the
+    /// `AppleProfileSetupView` until the user finishes. Password
+    /// registrations set this true at creation time because they pick
+    /// their own username during sign-up. (V15.)
+    @Column(name = "profile_setup_completed", nullable = false)
+    private boolean profileSetupCompleted;
 }
