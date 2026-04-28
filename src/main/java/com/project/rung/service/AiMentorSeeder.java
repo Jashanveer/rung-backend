@@ -45,7 +45,13 @@ public class AiMentorSeeder {
     public void seedAiMentor() {
         String emailHash = encryptedStringConverter.hash(AccountabilityService.AI_MENTOR_EMAIL);
 
-        User aiUser = userRepo.findByEmail(AccountabilityService.AI_MENTOR_EMAIL)
+        // Username fallback covers the case where V7 inserted the AI mentor
+        // with a plaintext email, but APP_ENCRYPTION_KEY is set so the JPA
+        // converter encrypts our lookup value and findByEmail / findByEmailHash
+        // both miss. Username is unencrypted and uniquely indexed, so it is
+        // the most reliable handle on the V7-seeded row.
+        User aiUser = userRepo.findByUsername(AccountabilityService.AI_MENTOR_USERNAME)
+                .or(() -> userRepo.findByEmail(AccountabilityService.AI_MENTOR_EMAIL))
                 .or(() -> userRepo.findByEmailHash(emailHash))
                 .orElseGet(() -> {
                     User created = userRepo.save(User.builder()
@@ -64,8 +70,26 @@ public class AiMentorSeeder {
                     return created;
                 });
 
-        if (aiUser.getEmailHash() == null && emailHash != null) {
+        // Sync the canonical email + hash on every boot. The V7 migration
+        // seeded this user with `ai-mentor@forma.app` before the rebrand;
+        // V9 only renamed the display name, so legacy databases still have
+        // the old email encrypted in place. AccountabilityService.aiMentorUser()
+        // looks up by `findByEmail(AI_MENTOR_EMAIL)` — if the column doesn't
+        // match, no AI mentor match is ever created, dashboard.match stays
+        // null, and the iOS chat send silently fails. Realigning the email
+        // here unblocks every account that landed before this fix.
+        boolean dirty = false;
+        if (!AccountabilityService.AI_MENTOR_EMAIL.equals(aiUser.getEmail())) {
+            log.info("Realigning AI mentor email from '{}' to '{}'",
+                    aiUser.getEmail(), AccountabilityService.AI_MENTOR_EMAIL);
+            aiUser.setEmail(AccountabilityService.AI_MENTOR_EMAIL);
+            dirty = true;
+        }
+        if (emailHash != null && !emailHash.equals(aiUser.getEmailHash())) {
             aiUser.setEmailHash(emailHash);
+            dirty = true;
+        }
+        if (dirty) {
             userRepo.save(aiUser);
         }
 

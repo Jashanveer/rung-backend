@@ -713,7 +713,14 @@ public class AccountabilityService {
     }
 
     private Optional<User> aiMentorUser() {
-        return userRepo.findByEmail(AI_MENTOR_EMAIL);
+        // Lookup by username, NOT email. The email column is encrypted with
+        // AES-GCM using a fresh random IV per encrypt (see
+        // EncryptedStringConverter), so findByEmail is non-deterministic —
+        // encrypting the same plaintext twice yields different ciphertexts
+        // and the row is never found. Username is unencrypted and uniquely
+        // indexed; matches what AiMentorSeeder uses as its canonical handle
+        // on the AI mentor row.
+        return userRepo.findByUsername(AI_MENTOR_USERNAME);
     }
 
     private MentorAI.MentorContext buildMentorContext(User mentee, UserProfile menteeProfile) {
