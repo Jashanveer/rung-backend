@@ -11,10 +11,10 @@
 
 
     <groupId>com.project</groupId>
-	<artifactId>habit-tracker</artifactId>
+	<artifactId>rung-backend</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>habit-tracker</name>
-	<description>Demo project for Spring Boot</description>
+	<name>rung-backend</name>
+	<description>Backend for the Rung habit-tracker app</description>
 	<url/>
 	<licenses>
 		<license/>

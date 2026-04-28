@@ -7,9 +7,9 @@ Use this agent when the task is to fix bugs, improve reliability, and optimize b
 
 ## Scope
 
-- Primary code: `src/main/java/com/project/habit_tracker/**`
+- Primary code: `src/main/java/com/project/rung/**`
 - Config: `src/main/resources/application.properties`
-- Tests: `src/test/java/com/project/habit_tracker/**`
+- Tests: `src/test/java/com/project/rung/**`
 - Do not modify frontend/mobile repos from this agent.
 
 ## Working Rules
@@ -62,7 +62,7 @@ Use this agent when the task is to fix bugs, improve reliability, and optimize b
 
 - Run single test class:
 ```bash
-./mvnw -Dtest=HabitTrackerApplicationTests test
+./mvnw -Dtest=RungApplicationTests test
 ```
 
 ## Optimization Checklist

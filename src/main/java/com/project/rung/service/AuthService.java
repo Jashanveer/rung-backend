@@ -1,0 +1,428 @@
+package com.project.rung.service;
+
+import com.project.rung.api.dto.AppleLoginRequest;
+import com.project.rung.api.dto.AuthLoginRequest;
+import com.project.rung.api.dto.AuthRefreshRequest;
+import com.project.rung.api.dto.AuthRegisterRequest;
+import com.project.rung.api.dto.AuthResponse;
+import com.project.rung.security.AppleIdTokenVerifier;
+import com.project.rung.security.EncryptedStringConverter;
+import com.project.rung.entity.EmailVerificationCode;
+import com.project.rung.entity.PasswordResetToken;
+import com.project.rung.entity.RefreshToken;
+import com.project.rung.entity.User;
+import com.project.rung.entity.UserProfile;
+import com.project.rung.repository.EmailVerificationCodeRepository;
+import com.project.rung.repository.PasswordResetTokenRepository;
+import com.project.rung.repository.RefreshTokenRepository;
+import com.project.rung.repository.UserProfileRepository;
+import com.project.rung.repository.UserRepository;
+import com.project.rung.security.JwtService;
+import io.jsonwebtoken.JwtException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
+import java.util.Locale;
+import java.security.SecureRandom;
+import java.util.UUID;
+
+@Service
+public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+    private static final String AVATAR_BASE_URL = "https://api.dicebear.com/9.x/adventurer/png?seed=";
+    private static final long EMAIL_VERIFICATION_TTL_MINUTES = 15;
+    private static final long RESET_TOKEN_TTL_HOURS = 24;
+
+    private final UserRepository userRepo;
+    private final UserProfileRepository profileRepo;
+    private final EmailVerificationCodeRepository emailVerificationCodeRepo;
+    private final PasswordResetTokenRepository resetTokenRepo;
+    private final RefreshTokenRepository refreshTokenRepo;
+    private final JwtService jwtService;
+    private final EmailService emailService;
+    private final EncryptedStringConverter encConverter;
+    private final AppleIdTokenVerifier appleVerifier;
+    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+    private final SecureRandom random = new SecureRandom();
+
+    public AuthService(
+            UserRepository userRepo,
+            UserProfileRepository profileRepo,
+            EmailVerificationCodeRepository emailVerificationCodeRepo,
+            PasswordResetTokenRepository resetTokenRepo,
+            RefreshTokenRepository refreshTokenRepo,
+            JwtService jwtService,
+            EmailService emailService,
+            EncryptedStringConverter encConverter,
+            AppleIdTokenVerifier appleVerifier
+    ) {
+        this.userRepo = userRepo;
+        this.profileRepo = profileRepo;
+        this.emailVerificationCodeRepo = emailVerificationCodeRepo;
+        this.resetTokenRepo = resetTokenRepo;
+        this.refreshTokenRepo = refreshTokenRepo;
+        this.jwtService = jwtService;
+        this.emailService = emailService;
+        this.encConverter = encConverter;
+        this.appleVerifier = appleVerifier;
+    }
+
+    @Transactional
+    public void requestEmailVerification(String rawEmail) {
+        String email = normalizeEmail(rawEmail);
+        if (emailExists(email)) {
+            throw new IllegalArgumentException("Email already registered");
+        }
+
+        emailVerificationCodeRepo.deleteByEmail(email);
+
+        String code = "%06d".formatted(random.nextInt(1_000_000));
+        EmailVerificationCode verification = EmailVerificationCode.builder()
+                .email(email)
+                .code(code)
+                .expiresAt(Instant.now().plus(EMAIL_VERIFICATION_TTL_MINUTES, ChronoUnit.MINUTES))
+                .build();
+        emailVerificationCodeRepo.save(verification);
+
+        emailService.sendEmailVerification(email, code, EMAIL_VERIFICATION_TTL_MINUTES);
+    }
+
+    @Transactional
+    public AuthResponse register(AuthRegisterRequest req) {
+        String username = normalizeUsername(req.username());
+        String email = normalizeEmail(req.email());
+
+        if (userRepo.existsByUsername(username) || emailExists(email)) {
+            // Single generic error so an attacker can't enumerate which of the two
+            // conflicts: reveals only that the combination is unavailable.
+            throw new IllegalArgumentException("That username or email can't be used. Try different credentials.");
+        }
+        consumeEmailVerificationCode(email, req.verificationCode());
+
+        User user = User.builder()
+                .username(username)
+                .email(email)
+                .emailHash(encConverter.hash(email))
+                .passwordHash(encoder.encode(req.password()))
+                // Password sign-ups pick their own username inline, so they
+                // skip the AppleProfileSetupView entirely — mark setup
+                // complete at creation. Apple sign-ups (createAppleUser)
+                // intentionally leave this false; UserService.setupProfile
+                // flips it once the user submits the setup form.
+                .profileSetupCompleted(true)
+                .build();
+        userRepo.save(user);
+
+        UserProfile profile = UserProfile.builder()
+                .user(user)
+                .displayName(username)
+                .avatarUrl(normalizeAvatarUrl(req.avatarUrl(), username))
+                .timezone(ZoneId.systemDefault().getId())
+                .language(Locale.getDefault().getLanguage().toUpperCase(Locale.ROOT))
+                .goals("Daily consistency")
+                .build();
+        profileRepo.save(profile);
+
+        // Fire-and-forget welcome email — never fails the registration if email is down
+        emailService.sendWelcome(email, username);
+
+        return issueTokens(user);
+    }
+
+    /**
+     * Sign in with Apple — verifies the identityToken against Apple's
+     * JWKS, then resolves to an existing User by `sub`, by email match,
+     * or by provisioning a new account on first sign-in. Always returns
+     * a fresh access/refresh pair the same shape as password login.
+     */
+    @Transactional
+    public AuthResponse appleLogin(AppleLoginRequest req) {
+        AppleIdTokenVerifier.AppleIdToken token = appleVerifier.verify(req.identityToken());
+
+        // 1. Already-linked Apple account → fast path
+        var existing = userRepo.findByAppleSub(token.sub());
+        if (existing.isPresent()) {
+            return issueTokens(existing.get());
+        }
+
+        // 2. First sign-in — Apple includes email exactly once per user.
+        // Subsequent logins drop it, so a missing email here means we
+        // expected a linked account but didn't find one. Bail honestly.
+        String rawEmail = token.email();
+        if (rawEmail == null || rawEmail.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Apple sign-in not yet linked to an account; revoke Apple's "
+                  + "Rung authorization and sign in again to relink."
+            );
+        }
+        String email = normalizeEmail(rawEmail);
+        String emailHash = encConverter.hash(email);
+
+        // 3. Email collision with a password-only account → link it so
+        // the user keeps a single profile. They can still log in via
+        // password later; the apple_sub just augments the row.
+        var byEmail = userRepo.findByEmailHash(emailHash);
+        if (byEmail.isPresent()) {
+            User user = byEmail.get();
+            user.setAppleSub(token.sub());
+            userRepo.save(user);
+            return issueTokens(user);
+        }
+
+        // 4. Brand-new user — provision username + profile from email.
+        // Pass `isNewUser = true` so the client knows to surface the
+        // profile-setup screen (username + avatar pick) before landing
+        // on the dashboard. Subsequent Apple logins return `false`
+        // because step 1 above hits and we never reach step 4.
+        User user = createAppleUser(email, emailHash, token.sub(), req.displayName());
+        return issueTokens(user, true);
+    }
+
+    /**
+     * Provisions a new User + UserProfile for a first-time Apple sign-in.
+     * Username is derived from the email local-part with a numeric suffix
+     * if necessary; password hash is a random unusable string (the user
+     * authenticates via Apple from now on, not via password).
+     */
+    private User createAppleUser(String email, String emailHash, String appleSub, String displayName) {
+        String username = generateUniqueUsername(email);
+        // Don't fabricate a displayName from the email-slug username. For
+        // private-relay sign-ups Apple drops `fullName` after the first
+        // authorization, so the slug is random-looking ("abc123xyz") and
+        // shouldn't surface anywhere user-facing — leaderboards, AI mentor
+        // greetings, welcome email, etc. We persist the empty string and
+        // let `setupProfile` write the user-supplied name once they
+        // complete onboarding. The `profile_setup_completed = false` flag
+        // (V15) gates the UI from rendering the dashboard until then.
+        String safeDisplayName = (displayName == null || displayName.isBlank())
+                ? ""
+                : displayName.trim();
+
+        User user = User.builder()
+                .username(username)
+                .email(email)
+                .emailHash(emailHash)
+                .passwordHash(encoder.encode(UUID.randomUUID().toString()))
+                .appleSub(appleSub)
+                .build();
+        userRepo.save(user);
+
+        UserProfile profile = UserProfile.builder()
+                .user(user)
+                .displayName(safeDisplayName)
+                .avatarUrl(normalizeAvatarUrl(null, username))
+                .timezone(ZoneId.systemDefault().getId())
+                .language(Locale.getDefault().getLanguage().toUpperCase(Locale.ROOT))
+                .goals("Daily consistency")
+                .build();
+        profileRepo.save(profile);
+
+        // Welcome email is sent later from UserService.setupProfile() once
+        // the user has actually picked a real name to be greeted by.
+        return user;
+    }
+
+    private String generateUniqueUsername(String email) {
+        int at = email.indexOf('@');
+        String base = (at > 0 ? email.substring(0, at) : email)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]", "");
+        if (base.isEmpty()) base = "user";
+        if (base.length() > 32) base = base.substring(0, 32);
+        if (!userRepo.existsByUsername(base)) return base;
+        for (int suffix = 2; suffix < 1_000; suffix++) {
+            String candidate = base + suffix;
+            if (!userRepo.existsByUsername(candidate)) return candidate;
+        }
+        // Fall back to a UUID slug — astronomically unlikely with 1000 misses.
+        return base + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    public AuthResponse login(AuthLoginRequest req) {
+        // `normalizeUsername` and `normalizeEmail` are identical (trim +
+        // lowercase) so one normalised identifier serves both lookups.
+        String identifier = normalizeUsername(req.username());
+        String emailHash = encConverter.hash(identifier);
+        User user = userRepo.findByUsername(identifier)
+                .or(() -> userRepo.findByEmailHash(emailHash))
+                .or(() -> userRepo.findByEmail(identifier))  // fallback for pre-encryption rows
+                .orElseThrow(() -> new IllegalArgumentException("Invalid credentials"));
+
+        if (!encoder.matches(req.password(), user.getPasswordHash())) {
+            throw new IllegalArgumentException("Invalid credentials");
+        }
+
+        return issueTokens(user);
+    }
+
+    @Transactional
+    public AuthResponse refresh(AuthRefreshRequest req) {
+        String rawToken = req.refreshToken();
+
+        // Validate JWT signature + expiry first
+        Long userId = jwtService.parseRefreshToken(rawToken);
+
+        // Check our DB record — rejects stolen tokens that were already rotated
+        String hash = jwtService.hashToken(rawToken);
+        RefreshToken stored = refreshTokenRepo.findByTokenHash(hash)
+                .orElseThrow(() -> new IllegalArgumentException("Invalid refresh token"));
+
+        if (stored.getUsedAt() != null) {
+            // Token reuse detected — possible theft; invalidate all tokens for this user
+            refreshTokenRepo.deleteByUser(stored.getUser());
+            throw new IllegalArgumentException("Refresh token already used");
+        }
+
+        // Rotate: mark old token consumed
+        stored.setUsedAt(Instant.now());
+        refreshTokenRepo.save(stored);
+
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        return issueTokens(user);
+    }
+
+    @Transactional
+    public void logout(String rawRefreshToken) {
+        String hash = jwtService.hashToken(rawRefreshToken);
+        refreshTokenRepo.findByTokenHash(hash).ifPresent(stored -> {
+            stored.setUsedAt(Instant.now());
+            refreshTokenRepo.save(stored);
+        });
+        // Always succeed — don't reveal whether the token existed
+    }
+
+    /**
+     * Initiates a password reset. Silently succeeds even if the account doesn't exist
+     * to prevent user enumeration.
+     */
+    @Transactional
+    public void requestPasswordReset(String emailOrUsername) {
+        String normalized = emailOrUsername.trim().toLowerCase(Locale.ROOT);
+        String emailHash = encConverter.hash(normalized);
+        User user = userRepo.findByUsername(normalized)
+                .or(() -> userRepo.findByEmailHash(emailHash))
+                .or(() -> userRepo.findByEmail(normalized))  // fallback for pre-encryption rows
+                .orElse(null);
+
+        if (user == null) {
+            log.info("Password reset requested for unknown account: {}", normalized);
+            return;  // silent no-op — don't reveal whether the account exists
+        }
+
+        // Invalidate any existing tokens for this user
+        resetTokenRepo.deleteByUser(user);
+
+        String token = UUID.randomUUID().toString().replace("-", "");
+        PasswordResetToken prt = PasswordResetToken.builder()
+                .user(user)
+                .token(token)
+                .expiresAt(Instant.now().plus(RESET_TOKEN_TTL_HOURS, ChronoUnit.HOURS))
+                .build();
+        resetTokenRepo.save(prt);
+
+        String displayName = profileRepo.findByUser(user)
+                .map(p -> p.getDisplayName())
+                .orElse(user.getUsername());
+        emailService.sendPasswordReset(user.getEmail(), displayName, token);
+    }
+
+    /**
+     * Consumes a reset token and updates the user's password.
+     * Throws {@link IllegalArgumentException} for invalid/expired/already-used tokens.
+     */
+    @Transactional
+    public AuthResponse resetPassword(String token, String newPassword) {
+        PasswordResetToken prt = resetTokenRepo.findByToken(token)
+                .orElseThrow(() -> new IllegalArgumentException("Invalid or expired reset token"));
+
+        if (prt.getUsedAt() != null) {
+            throw new IllegalArgumentException("This reset link has already been used");
+        }
+        if (Instant.now().isAfter(prt.getExpiresAt())) {
+            throw new IllegalArgumentException("This reset link has expired. Please request a new one");
+        }
+
+        User user = prt.getUser();
+        user.setPasswordHash(encoder.encode(newPassword));
+        userRepo.save(user);
+
+        prt.setUsedAt(Instant.now());
+        resetTokenRepo.save(prt);
+
+        return issueTokens(user);
+    }
+
+    // ── Private helpers ──────────────────────────────────────────────────────
+
+    private String normalizeUsername(String username) {
+        return username.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean emailExists(String normalizedEmail) {
+        String hash = encConverter.hash(normalizedEmail);
+        if (userRepo.existsByEmailHash(hash)) return true;
+        return userRepo.existsByEmail(normalizedEmail);  // fallback for pre-encryption rows
+    }
+
+    private void consumeEmailVerificationCode(String email, String code) {
+        EmailVerificationCode verification = emailVerificationCodeRepo.findTopByEmailOrderByIdDesc(email)
+                .orElseThrow(() -> new IllegalArgumentException("Request an email verification code first"));
+
+        if (verification.getUsedAt() != null) {
+            throw new IllegalArgumentException("This verification code has already been used");
+        }
+        if (Instant.now().isAfter(verification.getExpiresAt())) {
+            throw new IllegalArgumentException("This verification code has expired. Request a new one");
+        }
+        if (!verification.getCode().equals(code.trim())) {
+            throw new IllegalArgumentException("Invalid verification code");
+        }
+
+        verification.setUsedAt(Instant.now());
+        emailVerificationCodeRepo.save(verification);
+    }
+
+    private String normalizeAvatarUrl(String avatarUrl, String username) {
+        if (avatarUrl == null || avatarUrl.isBlank()) {
+            return AVATAR_BASE_URL + URLEncoder.encode(username, StandardCharsets.UTF_8);
+        }
+        String trimmed = avatarUrl.trim();
+        if (!trimmed.startsWith(AVATAR_BASE_URL)) {
+            throw new IllegalArgumentException("Choose one of the predefined avatars");
+        }
+        return trimmed;
+    }
+
+    private AuthResponse issueTokens(User user) {
+        return issueTokens(user, false);
+    }
+
+    private AuthResponse issueTokens(User user, boolean isNewUser) {
+        String accessToken  = jwtService.createAccessToken(user.getId(), user.getEmail());
+        String refreshToken = jwtService.createRefreshToken(user.getId(), user.getEmail());
+        long   accessExp    = jwtService.extractExpirationEpochSeconds(accessToken);
+        long   refreshExp   = jwtService.extractExpirationEpochSeconds(refreshToken);
+
+        refreshTokenRepo.save(RefreshToken.builder()
+                .user(user)
+                .tokenHash(jwtService.hashToken(refreshToken))
+                .expiresAt(Instant.ofEpochSecond(refreshExp))
+                .build());
+
+        return new AuthResponse(accessToken, refreshToken, accessExp, isNewUser, user.isProfileSetupCompleted());
+    }
+}
