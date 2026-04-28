@@ -92,10 +92,13 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Flyway -->
+        <!-- Flyway — Spring Boot 4 modularised autoconfig out of the core jar,
+             so we need the starter (not just flyway-core) for migrations to
+             run on startup. flyway-database-postgresql stays explicit because
+             Postgres support is in its own jar in newer Flyway versions. -->
         <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
