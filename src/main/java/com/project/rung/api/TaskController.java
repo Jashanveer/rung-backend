@@ -62,6 +62,8 @@ public class TaskController {
                                                  @Pattern(regexp = "^\\d{4}-\\d{2}-\\d{2}$", message = "dateKey must be yyyy-MM-dd")
                                                  @PathVariable String dateKey,
                                                  @Valid @RequestBody CheckUpdateRequest req) {
-        return ResponseEntity.ok(habitService.setTaskCheck(userId(auth), taskId, dateKey, req.done()));
+        return ResponseEntity.ok(habitService.setTaskCheck(
+                userId(auth), taskId, dateKey, req.done(), req.durationSeconds()
+        ));
     }
 }

@@ -46,4 +46,10 @@ public class HabitCheck {
     /// with legacy rows that predate the verification stack.
     @Column(name = "verification_source", length = 32)
     private String verificationSource;
+
+    /// Seconds the user spent completing the habit on this check, when
+    /// the client knows it (Focus Mode session length). NULL for plain
+    /// toggles where the client has no reliable duration signal.
+    @Column(name = "duration_seconds")
+    private Integer durationSeconds;
 }

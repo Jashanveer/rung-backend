@@ -110,9 +110,10 @@ public class HabitService {
 
     @Transactional
     public HabitResponse setCheck(Long userId, Long habitId, String dateKey, boolean done,
-                                  String verificationTier, String verificationSource) {
+                                  String verificationTier, String verificationSource,
+                                  Integer durationSeconds) {
         return setCheckByType(userId, habitId, dateKey, done, HabitEntryType.HABIT,
-                verificationTier, verificationSource);
+                verificationTier, verificationSource, durationSeconds);
     }
 
     public List<TaskResponse> listTasks(Long userId) {
@@ -144,11 +145,13 @@ public class HabitService {
     }
 
     @Transactional
-    public TaskResponse setTaskCheck(Long userId, Long taskId, String dateKey, boolean done) {
+    public TaskResponse setTaskCheck(Long userId, Long taskId, String dateKey, boolean done,
+                                     Integer durationSeconds) {
         // Tasks don't participate in tier-weighted scoring — verification
         // metadata is always null for their checks.
         return toTaskResponse(setCheckByType(
-                userId, taskId, dateKey, done, HabitEntryType.TASK, null, null
+                userId, taskId, dateKey, done, HabitEntryType.TASK, null, null,
+                durationSeconds
         ));
     }
 
@@ -231,7 +234,8 @@ public class HabitService {
 
     // @Transactional omitted — see note on updateByType.
     private HabitResponse setCheckByType(Long userId, Long entryId, String dateKey, boolean done,
-                                         HabitEntryType type, String verificationTier, String verificationSource) {
+                                         HabitEntryType type, String verificationTier, String verificationSource,
+                                         Integer durationSeconds) {
         User user = requireUser(userId);
         Habit habit = habitRepo.findByIdAndUserAndEntryType(entryId, user, type)
                 .orElseThrow(() -> new IllegalArgumentException(entityLabel(type) + " not found"));
@@ -250,8 +254,10 @@ public class HabitService {
             // refreshes the tier; toggling off leaves the historical record.
             if (verificationTier != null) hc.setVerificationTier(verificationTier);
             if (verificationSource != null) hc.setVerificationSource(verificationSource);
+            if (durationSeconds != null) hc.setDurationSeconds(durationSeconds);
         } else {
             hc.setCompletedAt(null);
+            hc.setDurationSeconds(null);
         }
         try {
             checkRepo.save(hc);
@@ -269,8 +275,10 @@ public class HabitService {
                 existing.setCompletedAt(Instant.now());
                 if (verificationTier != null) existing.setVerificationTier(verificationTier);
                 if (verificationSource != null) existing.setVerificationSource(verificationSource);
+                if (durationSeconds != null) existing.setDurationSeconds(durationSeconds);
             } else {
                 existing.setCompletedAt(null);
+                existing.setDurationSeconds(null);
             }
             checkRepo.save(existing);
             hc = existing;

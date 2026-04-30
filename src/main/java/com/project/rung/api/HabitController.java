@@ -100,7 +100,8 @@ public class HabitController {
 
         return ResponseEntity.ok(habitService.setCheck(
                 userId(auth), habitId, dateKey, req.done(),
-                req.verificationTier(), req.verificationSource()
+                req.verificationTier(), req.verificationSource(),
+                req.durationSeconds()
         ));
     }
 }
