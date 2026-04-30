@@ -1,5 +1,7 @@
 package com.project.rung.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Anthropic (Claude) implementation of {@link MentorAI}. Default and only
@@ -188,6 +191,94 @@ public class AIService implements MentorAI {
     }
 
     // MARK: — HTTP + prompt helpers
+
+    /**
+     * Parses a habit title with frequency hints out of natural language.
+     * Falls back to {@code Optional.empty()} when the API key is missing,
+     * the call fails, or Claude's response can't be parsed as JSON — the
+     * client is expected to keep the user's original input in those cases.
+     *
+     * Output contract (Claude-side JSON):
+     *   {"cleanedTitle": "gym", "weeklyTarget": 4}
+     * Where {@code weeklyTarget} is null/absent for daily/unspecified.
+     */
+    public Optional<ParseFrequencyResult> parseHabitFrequency(String text) {
+        if (!isConfigured()) {
+            return Optional.empty();
+        }
+        if (text == null || text.isBlank()) {
+            return Optional.empty();
+        }
+
+        String prompt = """
+                Extract a habit's title and weekly cadence from the user's input.
+                Return STRICT JSON with two fields:
+                  - "cleanedTitle": the habit title with the cadence clause removed
+                    (e.g. "gym 4 days a week" → "gym"). Preserve the user's casing.
+                  - "weeklyTarget": integer 1..7 if the user specified a weekly
+                    cadence; null if they meant daily or unspecified.
+
+                Examples:
+                  Input: "gym 4 days a week"  →  {"cleanedTitle":"gym","weeklyTarget":4}
+                  Input: "Read every day"     →  {"cleanedTitle":"Read","weeklyTarget":null}
+                  Input: "Yoga Mon Wed Fri"   →  {"cleanedTitle":"Yoga","weeklyTarget":3}
+                  Input: "Run on weekdays"    →  {"cleanedTitle":"Run","weeklyTarget":5}
+                  Input: "meditate"           →  {"cleanedTitle":"meditate","weeklyTarget":null}
+
+                Output ONLY the JSON object — no commentary, no code fences.
+
+                Input: %s
+                """.formatted(text.strip());
+
+        Map<String, Object> body = Map.of(
+                "model", model,
+                "max_tokens", 120,
+                "messages", List.of(Map.of("role", "user", "content", prompt))
+        );
+
+        String raw = callForText(body, "frequency parse");
+        if (raw == null || raw.isBlank()) {
+            return Optional.empty();
+        }
+
+        return parseFrequencyJSON(raw);
+    }
+
+    /**
+     * Lenient JSON extractor — strips leading/trailing prose Claude
+     * occasionally wraps around the object, then decodes with Jackson.
+     * Returns empty on any malformed output.
+     */
+    private Optional<ParseFrequencyResult> parseFrequencyJSON(String raw) {
+        String trimmed = raw.strip();
+        int start = trimmed.indexOf('{');
+        int end = trimmed.lastIndexOf('}');
+        if (start < 0 || end < 0 || end <= start) {
+            log.debug("AI frequency parse: no JSON object in response: {}", trimmed);
+            return Optional.empty();
+        }
+        String json = trimmed.substring(start, end + 1);
+
+        try {
+            JsonNode node = new ObjectMapper().readTree(json);
+            String cleaned = node.path("cleanedTitle").asText("").strip();
+            JsonNode targetNode = node.get("weeklyTarget");
+            Integer target = null;
+            if (targetNode != null && !targetNode.isNull()) {
+                int v = targetNode.asInt(0);
+                if (v >= 1 && v <= 7) target = v;
+            }
+            if (cleaned.isEmpty()) {
+                return Optional.empty();
+            }
+            return Optional.of(new ParseFrequencyResult(cleaned, target));
+        } catch (Exception e) {
+            log.debug("AI frequency parse: JSON decode failed: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    public record ParseFrequencyResult(String cleanedTitle, Integer weeklyTarget) {}
 
     private String callForText(Map<String, Object> body, String label) {
         try {
