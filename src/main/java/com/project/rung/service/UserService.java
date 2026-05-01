@@ -45,6 +45,7 @@ public class UserService {
     private final MentorshipMessageRepository mentorshipMessageRepo;
     private final SocialPostRepository socialPostRepo;
     private final EmailVerificationCodeRepository emailVerificationCodeRepo;
+    private final UserSleepSnapshotRepository sleepSnapshotRepo;
     private final EmailService emailService;
     private final AccountabilityStreamService streamService;
 
@@ -63,6 +64,7 @@ public class UserService {
             MentorshipMessageRepository mentorshipMessageRepo,
             SocialPostRepository socialPostRepo,
             EmailVerificationCodeRepository emailVerificationCodeRepo,
+            UserSleepSnapshotRepository sleepSnapshotRepo,
             EmailService emailService,
             AccountabilityStreamService streamService
     ) {
@@ -80,6 +82,7 @@ public class UserService {
         this.mentorshipMessageRepo = mentorshipMessageRepo;
         this.socialPostRepo = socialPostRepo;
         this.emailVerificationCodeRepo = emailVerificationCodeRepo;
+        this.sleepSnapshotRepo = sleepSnapshotRepo;
         this.emailService = emailService;
         this.streamService = streamService;
     }
@@ -131,12 +134,18 @@ public class UserService {
         log.info("deleteAccount start userId={} username={} habits={} entries={}",
                 userId, username, totalHabits, allEntries.size());
 
-        // Only send farewell once the transaction has committed successfully.
+        // Only send farewell + propagate the session-revoked broadcast
+        // once the transaction has committed successfully. The broadcast
+        // tells every other device the user has signed in on (iPhone /
+        // iPad / Mac) to clear its local copy of habits + tokens —
+        // they're listening on the per-user SSE stream.
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
                 log.info("deleteAccount committed userId={} username={} — username freed", userId, username);
                 emailService.sendAccountDeleted(email, displayName, totalHabits, bestStreak, totalDaysTracked);
+                streamService.publishToUser(userId, "session.revoked",
+                        Map.of("reason", "account_deleted", "at", Instant.now().toString()));
             }
 
             @Override
@@ -149,7 +158,11 @@ public class UserService {
         });
 
         // Delete in FK dependency order. Social / mentorship graph first so nothing
-        // still references the user row when we drop it.
+        // still references the user row when we drop it. UserSleepSnapshot
+        // and any other user-FK'd table must clear before
+        // `userRepo.delete(user)` — without that the FK constraint
+        // rolls the whole transaction back, the row survives, and a
+        // subsequent Apple sign-in resurrects every habit.
         mentorshipMessageRepo.deleteAllByUser(user);
         mentorMatchRepo.deleteAllByMentorOrMentee(user);
         friendConnectionRepo.deleteAllByUser(user);
@@ -164,6 +177,7 @@ public class UserService {
         refreshTokenRepo.deleteByUser(user);
         passwordResetTokenRepo.deleteByUser(user);
         emailVerificationCodeRepo.deleteByEmail(email);
+        sleepSnapshotRepo.deleteByUserId(userId);
         profileRepo.deleteByUser(user);
         userRepo.delete(user);
         // Force the DELETEs to flush to the DB inside the transaction so any
